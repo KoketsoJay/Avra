@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Frontend builds
+dist/
+dist-admin/
+
+# .NET builds
+[Bb]in/
+[Oo]bj/
+*.user
+
+# Service logs
+backend/*/logs/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editor and OS
+.vs/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local backups and scratch files
+*.bak
+*.sweep-backup

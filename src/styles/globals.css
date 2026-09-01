@@ -1,0 +1,37 @@
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  .avra-receipt,
+  .avra-receipt * {
+    visibility: visible;
+  }
+
+  .avra-receipt {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    transform: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
+    color: #07070f !important;
+  }
+
+  .avra-receipt * {
+    color: #07070f !important;
+    background-image: none !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
+  }
+
+  .avra-no-print,
+  .avra-receipt .avra-no-print {
+    display: none !important;
+  }
+}
