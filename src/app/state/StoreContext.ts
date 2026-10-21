@@ -10,6 +10,15 @@ export interface StoreValue {
   communities: CommunityCircle[];
   membershipTiers: MembershipTier[];
   discount: MemberDiscount;
+  /** Tier the shopper currently holds, or null. */
+  membershipPlanName: string | null;
+  /** Free-trial end date, when the member is still inside the trial. */
+  membershipTrialEndsAt: string | null;
+  /** When the next charge falls due. */
+  membershipNextBillingDate: string | null;
+  joiningPlanId: string | null;
+  joinMembership: (tier: MembershipTier) => void;
+  openAccount: () => void;
   addToCart: (product: Product, rect: DOMRect, img: string) => void;
   openCheckout: () => void;
   openOrders: () => void;

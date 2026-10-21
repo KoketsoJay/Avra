@@ -24,8 +24,10 @@ public class Product
     public bool OnReorder { get; set; }
 
     public string? Tag { get; set; }
+    public string? Details { get; set; }
     public string? Image1 { get; set; }
     public string? Image2 { get; set; }
+    public string? ImageGalleryJson { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAt { get; set; }
@@ -100,12 +102,14 @@ public class CreateProductDto
 {
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
+    public string? Details { get; set; }
     public decimal Price { get; set; }
     public string Category { get; set; } = string.Empty;
     public int Stock { get; set; }
     public string? Tag { get; set; }
     public string? Image1 { get; set; }
     public string? Image2 { get; set; }
+    public List<string>? ImageUrls { get; set; }
 }
 
 /// <summary>
@@ -116,13 +120,27 @@ public class ProductDto
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
+    public string? Details { get; set; }
     public decimal Price { get; set; }
     public string Category { get; set; } = string.Empty;
     public int Stock { get; set; }
     public string? Tag { get; set; }
     public string? Image1 { get; set; }
     public string? Image2 { get; set; }
+    public IReadOnlyList<string> ImageUrls { get; set; } = [];
     public bool IsActive { get; set; }
+}
+
+/// <summary>
+/// Result of uploading a product image: the stored reference to persist and a signed URL to preview it.
+/// </summary>
+public class ImageUploadResultDto
+{
+    /// <summary>The stored blob reference to save against the product.</summary>
+    public string Reference { get; set; } = string.Empty;
+
+    /// <summary>A short-lived signed URL for previewing the freshly uploaded image.</summary>
+    public string? Url { get; set; }
 }
 
 /// <summary>

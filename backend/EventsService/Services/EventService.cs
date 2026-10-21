@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Avra.ServiceDefaults.Storage;
 using EventsService.Data;
 using EventsService.Models;
+using QRCoder;
 
 namespace EventsService.Services;
 
@@ -32,7 +34,10 @@ public interface IEventService
 public interface IRegistrationService
 {
     Task<EventRegistrationDto> RegisterForEventAsync(string eventId, RegisterForEventDto registerDto);
+    Task<EventTicketPurchaseDto> PurchaseTicketsAsync(string eventId, PurchaseEventTicketsDto purchaseDto);
     Task<EventRegistrationDto?> GetRegistrationByIdAsync(string registrationId);
+    Task<IReadOnlyList<UserEventTicketDto>> GetUserTicketsAsync(string userId);
+    Task<EventTicketValidationResultDto> ValidateTicketAsync(ValidateEventTicketDto validateDto);
     Task<IEnumerable<EventRegistrationDto>> GetUserRegistrationsAsync(string userId);
     Task<IEnumerable<EventRegistrationDto>> GetEventRegistrationsAsync(string eventId);
     Task<bool> CancelRegistrationAsync(string registrationId);
@@ -44,11 +49,13 @@ public interface IRegistrationService
 public class EventService : IEventService
 {
     private readonly EventsDbContext _context;
+    private readonly IImageStorage _imageStorage;
     private readonly ILogger<EventService> _logger;
 
-    public EventService(EventsDbContext context, ILogger<EventService> logger)
+    public EventService(EventsDbContext context, IImageStorage imageStorage, ILogger<EventService> logger)
     {
         _context = context;
+        _imageStorage = imageStorage;
         _logger = logger;
     }
 
@@ -136,8 +143,9 @@ public class EventService : IEventService
             MaxAttendees = createDto.MaxAttendees,
             Price = createDto.Price,
             Organizer = createDto.Organizer,
-            ImageUrl = createDto.ImageUrl,
+            ImageUrl = _imageStorage.ToStorageReference(createDto.ImageUrl),
             IsFeatured = createDto.IsFeatured,
+            IsMembersOnly = createDto.IsMembersOnly,
             Status = createDto.PublishImmediately ? EventStatus.Active : EventStatus.Draft,
             CreatedAt = DateTime.UtcNow
         };
@@ -169,8 +177,9 @@ public class EventService : IEventService
         eventEntity.MaxAttendees = updateDto.MaxAttendees;
         eventEntity.Price = updateDto.Price;
         eventEntity.Organizer = updateDto.Organizer;
-        eventEntity.ImageUrl = updateDto.ImageUrl;
+        eventEntity.ImageUrl = _imageStorage.ToStorageReference(updateDto.ImageUrl);
         eventEntity.IsFeatured = updateDto.IsFeatured;
+        eventEntity.IsMembersOnly = updateDto.IsMembersOnly;
         eventEntity.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
@@ -206,8 +215,13 @@ public class EventService : IEventService
             return false;
         }
 
-        eventEntity.Status = EventStatus.Cancelled;
-        eventEntity.UpdatedAt = DateTime.UtcNow;
+        // Hard delete: tickets restrict event deletion, so remove them first; registrations cascade.
+        var tickets = await _context.EventTickets
+            .Where(t => t.EventId == eventId)
+            .ToListAsync();
+        _context.EventTickets.RemoveRange(tickets);
+
+        _context.Events.Remove(eventEntity);
         await _context.SaveChangesAsync();
 
         _logger.LogInformation("Event deleted successfully with id: {EventId}", eventId);
@@ -215,7 +229,7 @@ public class EventService : IEventService
         return true;
     }
 
-    private static EventDto MapToDto(Event eventEntity)
+    private EventDto MapToDto(Event eventEntity)
     {
         var currentAttendees = eventEntity.Registrations?
             .Where(r => r.Status == RegistrationStatus.Confirmed)
@@ -234,9 +248,10 @@ public class EventService : IEventService
             CurrentAttendees = currentAttendees,
             Price = eventEntity.Price,
             Organizer = eventEntity.Organizer,
-            ImageUrl = eventEntity.ImageUrl,
+            ImageUrl = _imageStorage.ToDisplayUrl(eventEntity.ImageUrl),
             Status = eventEntity.Status,
-            IsFeatured = eventEntity.IsFeatured
+            IsFeatured = eventEntity.IsFeatured,
+            IsMembersOnly = eventEntity.IsMembersOnly
         };
     }
 }
@@ -247,17 +262,24 @@ public class EventService : IEventService
 public class RegistrationService : IRegistrationService
 {
     private readonly EventsDbContext _context;
+    private readonly IPaymentGatewayClient _paymentGateway;
     private readonly ILogger<RegistrationService> _logger;
 
-    public RegistrationService(EventsDbContext context, ILogger<RegistrationService> logger)
+    public RegistrationService(EventsDbContext context, IPaymentGatewayClient paymentGateway, ILogger<RegistrationService> logger)
     {
         _context = context;
+        _paymentGateway = paymentGateway;
         _logger = logger;
     }
 
     public async Task<EventRegistrationDto> RegisterForEventAsync(string eventId, RegisterForEventDto registerDto)
     {
         _logger.LogInformation("Registering user {UserId} for event {EventId}", registerDto.UserId, eventId);
+
+        if (registerDto.NumberOfAttendees <= 0)
+        {
+            throw new InvalidOperationException("Number of attendees must be at least 1");
+        }
 
         var eventEntity = await _context.Events
             .Include(e => e.Registrations)
@@ -277,17 +299,17 @@ public class RegistrationService : IRegistrationService
             throw new InvalidOperationException("Event is fully booked");
         }
 
-        var registration = new EventRegistration
+        if (eventEntity.IsMembersOnly && !registerDto.IsMember)
         {
-            EventId = eventId,
-            UserId = registerDto.UserId,
-            UserName = registerDto.UserName,
-            UserEmail = registerDto.UserEmail,
-            NumberOfAttendees = registerDto.NumberOfAttendees,
-            Status = RegistrationStatus.Confirmed,
-            AmountPaid = eventEntity.Price * registerDto.NumberOfAttendees,
-            RegisteredAt = DateTime.UtcNow
-        };
+            throw new InvalidOperationException("This event is available to members only.");
+        }
+
+        if (eventEntity.Price > 0)
+        {
+            throw new InvalidOperationException("This is a paid event. Use the ticket purchase endpoint.");
+        }
+
+        var registration = CreateRegistration(eventId, registerDto.UserId, registerDto.UserName, registerDto.UserEmail, registerDto.NumberOfAttendees, 0m);
 
         _context.EventRegistrations.Add(registration);
         await _context.SaveChangesAsync();
@@ -297,12 +319,205 @@ public class RegistrationService : IRegistrationService
         return MapToDto(registration);
     }
 
+    public async Task<EventTicketPurchaseDto> PurchaseTicketsAsync(string eventId, PurchaseEventTicketsDto purchaseDto)
+    {
+        ArgumentNullException.ThrowIfNull(purchaseDto);
+
+        _logger.LogInformation("Purchasing {Count} ticket(s) for user {UserId} on event {EventId}", purchaseDto.NumberOfTickets, purchaseDto.UserId, eventId);
+
+        if (purchaseDto.NumberOfTickets <= 0)
+        {
+            throw new InvalidOperationException("Number of tickets must be at least 1");
+        }
+
+        var eventEntity = await _context.Events
+            .Include(e => e.Registrations)
+            .FirstOrDefaultAsync(e => e.Id == eventId);
+
+        if (eventEntity == null)
+        {
+            throw new KeyNotFoundException($"Event with id {eventId} not found");
+        }
+
+        if (eventEntity.IsMembersOnly && !purchaseDto.IsMember)
+        {
+            throw new InvalidOperationException("This event is available to members only.");
+        }
+
+        if (eventEntity.Price <= 0)
+        {
+            throw new InvalidOperationException("This event is free. Use RSVP registration instead.");
+        }
+
+        if (string.IsNullOrWhiteSpace(purchaseDto.PaymentMethod))
+        {
+            throw new InvalidOperationException("Payment method is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(purchaseDto.CardLast4) || purchaseDto.CardLast4.Length != 4 || !purchaseDto.CardLast4.All(char.IsDigit))
+        {
+            throw new InvalidOperationException("Card last 4 digits are required.");
+        }
+
+        var currentAttendees = eventEntity.Registrations
+            .Where(r => r.Status == RegistrationStatus.Confirmed)
+            .Sum(r => r.NumberOfAttendees);
+
+        if (currentAttendees + purchaseDto.NumberOfTickets > eventEntity.MaxAttendees)
+        {
+            throw new InvalidOperationException("Event is fully booked");
+        }
+
+        var total = eventEntity.Price * purchaseDto.NumberOfTickets;
+
+        var payment = await _paymentGateway.ChargeAsync(new PaymentChargeRequest
+        {
+            Amount = total,
+            Currency = "ZAR",
+            PaymentMethod = purchaseDto.PaymentMethod,
+            CardLast4 = purchaseDto.CardLast4,
+            Reference = $"event:{eventEntity.Id}:user:{purchaseDto.UserId}:tickets:{purchaseDto.NumberOfTickets}",
+            Description = $"{eventEntity.Title} x{purchaseDto.NumberOfTickets}",
+        });
+
+        if (!payment.Approved)
+        {
+            throw new InvalidOperationException(payment.Message);
+        }
+
+        var registration = CreateRegistration(eventId, purchaseDto.UserId, purchaseDto.UserName, purchaseDto.UserEmail, purchaseDto.NumberOfTickets, total);
+
+        var issuedAt = DateTime.UtcNow;
+        var tickets = Enumerable.Range(0, purchaseDto.NumberOfTickets)
+            .Select(_ => CreateTicket(registration, eventEntity, issuedAt))
+            .ToList();
+
+        _context.EventRegistrations.Add(registration);
+        _context.EventTickets.AddRange(tickets);
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation("Ticket purchase completed with registration {RegistrationId}", registration.Id);
+
+        return new EventTicketPurchaseDto
+        {
+            EventId = eventEntity.Id,
+            EventTitle = eventEntity.Title,
+            UserId = purchaseDto.UserId,
+            NumberOfTickets = purchaseDto.NumberOfTickets,
+            AmountPaid = total,
+            PaymentMethod = purchaseDto.PaymentMethod,
+            PaymentStatus = payment.Status,
+            Registration = MapToDto(registration),
+            Tickets = tickets.Select(MapToDto).ToList(),
+        };
+    }
+
     public async Task<EventRegistrationDto?> GetRegistrationByIdAsync(string registrationId)
     {
         _logger.LogInformation("Fetching registration with id: {RegistrationId}", registrationId);
 
         var registration = await _context.EventRegistrations.FindAsync(registrationId);
         return registration == null ? null : MapToDto(registration);
+    }
+
+    public async Task<IReadOnlyList<UserEventTicketDto>> GetUserTicketsAsync(string userId)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return [];
+        }
+
+        var tickets = await _context.EventTickets
+            .Include(t => t.Event)
+            .Include(t => t.Registration)
+            .Where(t => t.UserId == userId && t.Registration != null && t.Registration.Status != RegistrationStatus.Cancelled)
+            .OrderByDescending(t => t.IssuedAt)
+            .ToListAsync();
+
+        return tickets.Select(MapToUserTicketDto).ToList();
+    }
+
+    public async Task<EventTicketValidationResultDto> ValidateTicketAsync(ValidateEventTicketDto validateDto)
+    {
+        ArgumentNullException.ThrowIfNull(validateDto);
+
+        var ticketNumber = validateDto.TicketNumber.Trim();
+        if (string.IsNullOrWhiteSpace(ticketNumber))
+        {
+            return new EventTicketValidationResultDto
+            {
+                IsValid = false,
+                Status = "InvalidInput",
+                Message = "Ticket number is required.",
+            };
+        }
+
+        var ticket = await _context.EventTickets
+            .Include(t => t.Event)
+            .Include(t => t.Registration)
+            .FirstOrDefaultAsync(t => t.TicketNumber == ticketNumber);
+
+        if (ticket == null)
+        {
+            return new EventTicketValidationResultDto
+            {
+                IsValid = false,
+                Status = "NotFound",
+                Message = "Ticket not found.",
+            };
+        }
+
+        if (!string.IsNullOrWhiteSpace(validateDto.EventId) && !string.Equals(ticket.EventId, validateDto.EventId, StringComparison.Ordinal))
+        {
+            return new EventTicketValidationResultDto
+            {
+                IsValid = false,
+                Status = "WrongEvent",
+                Message = "Ticket belongs to a different event.",
+                Ticket = MapToUserTicketDto(ticket),
+            };
+        }
+
+        if (ticket.IsCancelled || ticket.Registration?.Status == RegistrationStatus.Cancelled)
+        {
+            return new EventTicketValidationResultDto
+            {
+                IsValid = false,
+                Status = "Cancelled",
+                Message = "Ticket has been cancelled.",
+                Ticket = MapToUserTicketDto(ticket),
+            };
+        }
+
+        if (ticket.Event?.Status == EventStatus.Cancelled)
+        {
+            return new EventTicketValidationResultDto
+            {
+                IsValid = false,
+                Status = "EventCancelled",
+                Message = "This event has been cancelled.",
+                Ticket = MapToUserTicketDto(ticket),
+            };
+        }
+
+        if (ticket.Event != null && DateTime.UtcNow > ticket.Event.EndDate.AddHours(8))
+        {
+            return new EventTicketValidationResultDto
+            {
+                IsValid = false,
+                Status = "Expired",
+                Message = "Ticket has expired.",
+                Ticket = MapToUserTicketDto(ticket),
+            };
+        }
+
+        return new EventTicketValidationResultDto
+        {
+            IsValid = true,
+            Status = "Valid",
+            Message = "Ticket is valid for entry.",
+            Ticket = MapToUserTicketDto(ticket),
+        };
     }
 
     public async Task<IEnumerable<EventRegistrationDto>> GetUserRegistrationsAsync(string userId)
@@ -333,7 +548,9 @@ public class RegistrationService : IRegistrationService
     {
         _logger.LogInformation("Cancelling registration with id: {RegistrationId}", registrationId);
 
-        var registration = await _context.EventRegistrations.FindAsync(registrationId);
+        var registration = await _context.EventRegistrations
+            .Include(r => r.Tickets)
+            .FirstOrDefaultAsync(r => r.Id == registrationId);
         if (registration == null)
         {
             return false;
@@ -341,6 +558,10 @@ public class RegistrationService : IRegistrationService
 
         registration.Status = RegistrationStatus.Cancelled;
         registration.CancelledAt = DateTime.UtcNow;
+        foreach (var ticket in registration.Tickets)
+        {
+            ticket.IsCancelled = true;
+        }
         await _context.SaveChangesAsync();
 
         _logger.LogInformation("Registration cancelled successfully with id: {RegistrationId}", registrationId);
@@ -361,6 +582,87 @@ public class RegistrationService : IRegistrationService
             Status = registration.Status,
             AmountPaid = registration.AmountPaid,
             RegisteredAt = registration.RegisteredAt
+        };
+    }
+
+    private static EventRegistration CreateRegistration(
+        string eventId,
+        string userId,
+        string userName,
+        string userEmail,
+        int attendeeCount,
+        decimal amountPaid) =>
+        new()
+        {
+            EventId = eventId,
+            UserId = userId,
+            UserName = userName,
+            UserEmail = userEmail,
+            NumberOfAttendees = attendeeCount,
+            Status = RegistrationStatus.Confirmed,
+            AmountPaid = amountPaid,
+            RegisteredAt = DateTime.UtcNow,
+        };
+
+    private static EventTicket CreateTicket(EventRegistration registration, Event eventEntity, DateTime issuedAt)
+    {
+        var ticketNumber = BuildTicketNumber();
+        var payload = $"avra:event={eventEntity.Id};ticket={ticketNumber};registration={registration.Id};user={registration.UserId};issued={issuedAt:O}";
+        return new EventTicket
+        {
+            RegistrationId = registration.Id,
+            EventId = eventEntity.Id,
+            UserId = registration.UserId,
+            TicketNumber = ticketNumber,
+            QrCodePayload = payload,
+            QrCodePngBase64 = CreateQrPngBase64(payload),
+            IssuedAt = issuedAt,
+        };
+    }
+
+    private static string BuildTicketNumber() =>
+        $"AVRA-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString("N")[..8].ToUpperInvariant()}";
+
+    private static string CreateQrPngBase64(string payload)
+    {
+        using var generator = new QRCodeGenerator();
+        using var qrData = generator.CreateQrCode(payload, QRCodeGenerator.ECCLevel.Q);
+        var pngQr = new PngByteQRCode(qrData);
+        var pngBytes = pngQr.GetGraphic(16);
+        return Convert.ToBase64String(pngBytes);
+    }
+
+    private static EventTicketDto MapToDto(EventTicket ticket)
+    {
+        return new EventTicketDto
+        {
+            Id = ticket.Id,
+            RegistrationId = ticket.RegistrationId,
+            EventId = ticket.EventId,
+            UserId = ticket.UserId,
+            TicketNumber = ticket.TicketNumber,
+            QrCodePayload = ticket.QrCodePayload,
+            QrCodePngBase64 = ticket.QrCodePngBase64,
+            IssuedAt = ticket.IssuedAt,
+        };
+    }
+
+    private static UserEventTicketDto MapToUserTicketDto(EventTicket ticket)
+    {
+        return new UserEventTicketDto
+        {
+            Id = ticket.Id,
+            RegistrationId = ticket.RegistrationId,
+            EventId = ticket.EventId,
+            EventTitle = ticket.Event?.Title ?? string.Empty,
+            EventLocation = ticket.Event?.Location ?? string.Empty,
+            EventStartDate = ticket.Event?.StartDate ?? DateTime.MinValue,
+            EventEndDate = ticket.Event?.EndDate ?? DateTime.MinValue,
+            TicketNumber = ticket.TicketNumber,
+            QrCodePayload = ticket.QrCodePayload,
+            QrCodePngBase64 = ticket.QrCodePngBase64,
+            IssuedAt = ticket.IssuedAt,
+            IsCancelled = ticket.IsCancelled,
         };
     }
 }

@@ -47,10 +47,10 @@ public class UserCheckoutAcceptedIntegrationEventHandler(
             integrationEvent.Country,
             integrationEvent.ZipCode,
             integrationEvent.PaymentMethod,
-            integrationEvent.CardNumber,
+            integrationEvent.CardLast4,
             integrationEvent.CardHolderName,
             integrationEvent.CardExpiration,
-            integrationEvent.CardSecurityNumber,
+            string.Empty,
             integrationEvent.CardTypeId);
 
         var requestCreateOrder = new IdentifiedCommand<CreateOrderCommand, bool>(createOrderCommand, integrationEvent.RequestId);

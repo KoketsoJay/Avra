@@ -34,7 +34,8 @@ public class BuyerEntityTypeConfiguration : IEntityTypeConfiguration<Buyer>
 }
 
 /// <summary>
-/// Maps stored payment methods. Card numbers are persisted masked by the application layer and
+/// Maps stored payment methods. Only the last four digits of a card are persisted and the
+/// security number is never stored at all.
 /// the security number is never stored at all.
 /// </summary>
 public class PaymentMethodEntityTypeConfiguration : IEntityTypeConfiguration<PaymentMethod>

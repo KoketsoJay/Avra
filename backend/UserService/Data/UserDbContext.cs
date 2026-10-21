@@ -17,6 +17,7 @@ public class UserDbContext : DbContext
     public DbSet<MembershipPlan> MembershipPlans { get; set; }
     public DbSet<MembershipPlanFeature> MembershipPlanFeatures { get; set; }
     public DbSet<MemberDiscount> MemberDiscounts { get; set; }
+    public DbSet<MembershipInvoice> MembershipInvoices { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -44,11 +45,30 @@ public class UserDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.UserId).HasMaxLength(255).IsRequired();
             entity.Property(e => e.PlanName).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.MonthlyPrice).HasPrecision(18, 2);
             entity.HasOne(e => e.User)
                 .WithMany()
                 .HasForeignKey(e => e.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(e => e.UserId);
+            entity.HasIndex(e => e.Status);
+            // The billing worker sweeps on this column every cycle.
+            entity.HasIndex(e => e.NextBillingDate);
+        });
+
+        modelBuilder.Entity<MembershipInvoice>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.UserId).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.PlanName).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Amount).HasPrecision(18, 2);
+            entity.Property(e => e.FailureReason).HasMaxLength(500);
+            entity.HasOne(e => e.Membership)
+                .WithMany()
+                .HasForeignKey(e => e.MembershipId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(e => e.UserId);
+            entity.HasIndex(e => e.MembershipId);
             entity.HasIndex(e => e.Status);
         });
 

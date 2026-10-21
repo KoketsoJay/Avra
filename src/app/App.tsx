@@ -31,20 +31,21 @@ import {
   type ProductPayload,
   type ProductDto,
   type UserProfileDto,
+  type UserMembershipDto,
   type WellnessPlanPayload,
   type WellnessPlanDto,
 } from "@/app/api/avraApi";
 import { useCatalogue } from "@/shared/catalogue";
 import { NO_DISCOUNT, memberUnitPrice, type MemberDiscount } from "@/app/lib/pricing";
 import {
-  Bracket, G, Grain, Shine, TiltCard, bg, bodoni, fg, gold, goldGrad, money,
+  Bracket, G, GoldBtn, Grain, Shine, TiltCard, bg, bodoni, fg, gold, goldGrad, money,
 } from "@/app/ui/primitives";
 import { StoreCtx } from "@/app/state/StoreContext";
 import {
   ClubPage, CommunityPage, EventsPage, HomePage, ShopPage, WellnessPage,
-  CheckoutPage, OrdersPage as OrdersRoutePage,
+  CheckoutPage, OrdersPage as OrdersRoutePage, TicketsPage,
 } from "@/app/routes/pages";
-import { Footer } from "@/app/sections";
+import { MemberDashboard } from "@/app/routes/MemberDashboard";
 import { Link, Route, Routes } from "react-router";
 
 gsap.registerPlugin(ScrollTrigger);
@@ -85,6 +86,17 @@ function resolveImage(reference?: string | null) {
 
 function toCurrencyPrice(price: number) {
   return Number.isFinite(price) ? price : 0;
+}
+
+function ShellFooter() {
+  return (
+    <footer className="px-6 py-10" style={{ borderTop: "1px solid rgba(255,255,255,0.08)", color: `${fg}66` }}>
+      <div className="max-w-7xl mx-auto flex flex-col md:flex-row gap-3 md:items-center md:justify-between text-xs tracking-wider uppercase">
+        <span>AVRA Collective</span>
+        <span>Intentional living, curated daily</span>
+      </div>
+    </footer>
+  );
 }
 
 
@@ -1177,7 +1189,8 @@ function Navbar({ cartCount, orderCount, profile, onCartOpen, onAccountOpen, onO
   const navRef     = useRef<HTMLElement>(null);
   const cartBtnRef = useRef<HTMLButtonElement>(null);
   const { cartIconRef } = useContext(CartCtx);
-  const links = [{l:"Shop",href:"/shop"},{l:"The Club",href:"/club"},{l:"Wellness",href:"/wellness"},{l:"Community",href:"/community"},{l:"Events",href:"/events"}];
+  const links = [{l:"Shop",href:"/shop"},{l:"The Club",href:"/club"},{l:"Wellness",href:"/wellness"},{l:"Community",href:"/community"},{l:"Events",href:"/events"},{l:"Tickets",href:"/tickets"}];
+  if (profile) links.push({ l:"Dashboard", href:"/dashboard" });
 
   // Forward the ref to context
   useEffect(() => {
@@ -1279,6 +1292,10 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfileDto|null>(() => getStoredProfile());
   const [membershipTiers, setMembershipTiers] = useState<MembershipTier[]>([]);
   const [discount, setDiscount] = useState<MemberDiscount>(NO_DISCOUNT);
+  const [membershipPlanName, setMembershipPlanName] = useState<string|null>(null);
+  const [membershipTrialEndsAt, setMembershipTrialEndsAt] = useState<string|null>(null);
+  const [membershipNextBillingDate, setMembershipNextBillingDate] = useState<string|null>(null);
+  const [joiningPlanId, setJoiningPlanId] = useState<string|null>(null);
   const [loaded,   setLoaded]   = useState(false);
   const [toast,    setToast]    = useState<string|null>(null);
   const { products, events, programs, communities } = useCatalogue();
@@ -1402,15 +1419,52 @@ export default function App() {
 
   // Display only. Checkout re-resolves the rate server-side, so this cannot be used to underpay.
   useEffect(() => {
-    if (!isAuthenticated()) { setDiscount(NO_DISCOUNT); return; }
+    if (!isAuthenticated()) { setDiscount(NO_DISCOUNT); setMembershipPlanName(null); return; }
     let cancelled = false;
     avraApi.memberships.myDiscount()
       .then(result => {
         if (!cancelled) setDiscount({ percentage: result.percentage, label: result.label });
       })
       .catch(error => console.warn("Unable to resolve the member discount; showing list prices", error));
+    if (profile?.id) {
+      avraApi.memberships.mine(profile.id)
+        .then(membership => { if (!cancelled) applyMembership(membership); })
+        .catch(() => { if (!cancelled) applyMembership(null); });
+    }
     return () => { cancelled = true; };
   }, [profile?.id]);
+
+  const applyMembership = (membership: UserMembershipDto | null) => {
+    setMembershipPlanName(membership?.planName ?? null);
+    setMembershipTrialEndsAt(membership?.isInTrial ? membership.trialEndsAt ?? null : null);
+    setMembershipNextBillingDate(membership?.nextBillingDate ?? null);
+  };
+
+  const joinMembership = async (tier: MembershipTier) => {
+    if (!isAuthenticated() || !profile?.id) {
+      setAccountOpen(true);
+      setToast("Please sign in to join the club");
+      return;
+    }
+    if (membershipPlanName === tier.name) return;
+
+    setJoiningPlanId(tier.id);
+    try {
+      const membership = await avraApi.memberships.join(profile.id, tier.name);
+      applyMembership(membership);
+      // The tier carries a discount, so re-resolve it rather than assuming the advertised rate.
+      const refreshed = await avraApi.memberships.myDiscount();
+      setDiscount({ percentage: refreshed.percentage, label: refreshed.label });
+      setToast(membership.isInTrial
+        ? `${membership.planName} — free until ${new Date(membership.trialEndsAt!).toLocaleDateString()}`
+        : `Welcome to ${membership.planName}`);
+    } catch (error) {
+      console.warn("Membership enrolment failed", error);
+      setToast(isApiUnavailable(error) ? "User service is offline" : "Could not join — please try again");
+    } finally {
+      setJoiningPlanId(null);
+    }
+  };
 
   // Fly-to-cart animation
   const fly = useCallback((srcRect: DOMRect, img: string) => {
@@ -1519,7 +1573,7 @@ export default function App() {
       buyer: details.email,
     };
 
-    const knownIds = new Set(orders.map(order => order.remoteId).filter((id): id is number => typeof id === "number"));
+    const knownIds = new Set<number>(orders.map(order => order.remoteId).filter((id): id is number => typeof id === "number"));
     let placed: OrderRecord|undefined;
 
     try {
@@ -1564,6 +1618,9 @@ export default function App() {
     <CartCtx.Provider value={{ fly, cartIconRef }}>
       <StoreCtx.Provider value={{
         products, events, programs, communities, membershipTiers, discount,
+        membershipPlanName, membershipTrialEndsAt, membershipNextBillingDate,
+        joiningPlanId, joinMembership,
+        openAccount: () => setAccountOpen(true),
         addToCart,
         openCheckout: () => setCheckoutOpen(true),
         openOrders: () => setOrdersOpen(true),
@@ -1596,12 +1653,14 @@ export default function App() {
             <Route path="/wellness" element={<WellnessPage />} />
             <Route path="/community" element={<CommunityPage />} />
             <Route path="/events" element={<EventsPage />} />
+            <Route path="/tickets" element={<TicketsPage />} />
+            <Route path="/dashboard" element={<MemberDashboard />} />
             <Route path="/checkout" element={<CheckoutPage />} />
             <Route path="/orders" element={<OrdersRoutePage />} />
             <Route path="*" element={<HomePage />} />
           </Routes>
         </main>
-        <Footer />
+        <ShellFooter />
       </div>
       </StoreCtx.Provider>
     </CartCtx.Provider>

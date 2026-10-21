@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { AnimatePresence, motion } from "motion/react";
@@ -6,7 +7,7 @@ import {
   ArrowRight, Calendar, Check, Clock, Facebook, Heart, Instagram, MapPin, Plus,
   Shield, Sparkles, Star, Twitter, Users, Zap,
 } from "lucide-react";
-import { avraApi } from "@/app/api/avraApi";
+import { avraApi, isApiUnavailable, type EventTicketDto } from "@/app/api/avraApi";
 import {
   resolveImage,
   type AvraEvent, type CommunityCircle, type MembershipTier, type Product, type WellnessProgram,
@@ -14,7 +15,7 @@ import {
 import { memberUnitPrice, type MemberDiscount } from "@/app/lib/pricing";
 import {
   Bracket, G, GhostBtn, GoldBtn, Grain, Orb, ParallaxImg, RevealImg,
-  SectionNum, Shine, TiltCard, bg, bodoni, fg, gold, goldGrad, money, useReveal,
+  SectionNum, Shine, TiltCard, bg, bodoni, fg, gold, goldGrad, money, shine, useReveal,
 } from "@/app/ui/primitives";
 
 import heroImg        from "@/assets/avra/avra_42.jpg";
@@ -22,6 +23,7 @@ import lifestyleKitch from "@/assets/avra/avra_44.jpg";
 import meditationImg  from "@/assets/avra/avra_1.jpg";
 import mindfulImg     from "@/assets/avra/avra_59.jpg";
 import selfCareImg    from "@/assets/avra/avra_11.jpg";
+import pilatesOcean   from "@/assets/avra/avra_8.jpg";
 import farmersMarket  from "@/assets/avra/avra_32.jpg";
 import studioYoga     from "@/assets/avra/avra_29.jpg";
 import communityGroup from "@/assets/avra/avra_2.jpg";
@@ -35,7 +37,7 @@ export const HERO_VIDEOS = [
   "https://videos.pexels.com/video-files/8981788/8981788-hd_1920_1080_30fps.mp4", // Woman meditating outdoors â€” fallback
 ];
 
-export function Hero({ onShopClick }:{ onShopClick:()=>void }) {
+function Hero({ onShopClick }:{ onShopClick:()=>void }) {
   const badgeRef = useRef<HTMLDivElement>(null);
   const h1Ref    = useRef<HTMLHeadingElement>(null);
   const subRef   = useRef<HTMLDivElement>(null);
@@ -156,6 +158,9 @@ export function Hero({ onShopClick }:{ onShopClick:()=>void }) {
   );
 }
 
+export { Hero };
+export const HeroSection = Hero;
+
 // â”€â”€â”€ Brand Story â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export function BrandStory() {
   useReveal(".bs-r");
@@ -224,8 +229,13 @@ export function BrandStory() {
 export function ProductCard({ p, discount, onAdd }:{ p:Product; discount:MemberDiscount; onAdd:(rect:DOMRect,img:string)=>void }) {
   const [hovered, setHovered] = useState(false);
   const [added, setAdded]     = useState(false);
+  const [activeImage, setActiveImage] = useState(0);
+  const [showDetails, setShowDetails] = useState(false);
   const btnRef    = useRef<HTMLButtonElement>(null);
   const shineRef  = useRef<HTMLDivElement>(null);
+  const gallery = (p.images.length > 0 ? p.images : [p.img1, p.img2]).filter(Boolean);
+  const selectedImage = gallery[activeImage] ?? p.img1;
+  const selectedImageUrl = resolveImage(selectedImage) ?? "";
 
   // Shimmer sweep on hover
   useEffect(() => {
@@ -238,10 +248,15 @@ export function ProductCard({ p, discount, onAdd }:{ p:Product; discount:MemberD
     }
   }, [hovered]);
 
+  useEffect(() => {
+    setActiveImage(0);
+    setShowDetails(false);
+  }, [p.id]);
+
   const handleAdd = () => {
     if (!btnRef.current) return;
     const rect = btnRef.current.getBoundingClientRect();
-    onAdd(rect, resolveImage(p.img1) ?? "");
+    onAdd(rect, selectedImageUrl);
     setAdded(true);
     setTimeout(() => setAdded(false), 1500);
   };
@@ -256,12 +271,8 @@ export function ProductCard({ p, discount, onAdd }:{ p:Product; discount:MemberD
 
       <div className="relative overflow-hidden bg-[#111118]" style={{ height:340 }}
         onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)}>
-        {/* Primary image */}
-        <img src={resolveImage(p.img1)} alt={p.name} className="absolute inset-0 w-full h-full object-cover object-top"
-          style={{ transition:"opacity 0.65s ease, transform 0.65s ease", opacity:hovered?0:1, transform:hovered?"scale(1.08)":"scale(1)" }} />
-        {/* Alternate image */}
-        <img src={resolveImage(p.img2)} alt={p.name+" alt"} className="absolute inset-0 w-full h-full object-cover object-top"
-          style={{ transition:"opacity 0.65s ease, transform 0.65s ease", opacity:hovered?1:0, transform:hovered?"scale(1)":"scale(1.06)" }} />
+        <img src={selectedImageUrl} alt={p.name} className="absolute inset-0 w-full h-full object-cover object-top"
+          style={{ transition:"transform 0.65s ease", transform:hovered?"scale(1.08)":"scale(1)" }} />
 
         {/* Hover overlay */}
         <div className="absolute inset-0 flex items-end p-5 transition-all duration-400"
@@ -274,6 +285,29 @@ export function ProductCard({ p, discount, onAdd }:{ p:Product; discount:MemberD
             </button>
           </div>
         </div>
+
+        {gallery.length > 1 && (
+          <div className="absolute bottom-4 left-4 flex gap-2 z-30">
+            {gallery.slice(0, 5).map((imageRef, index) => {
+              const thumbnail = resolveImage(imageRef);
+              return (
+                <button
+                  key={`${p.id}-${imageRef}-${index}`}
+                  type="button"
+                  aria-label={`View ${p.name} image ${index + 1}`}
+                  onClick={() => setActiveImage(index)}
+                  className="w-10 h-10 rounded-lg overflow-hidden"
+                  style={{
+                    border: activeImage === index ? `1px solid ${gold}` : "1px solid rgba(255,255,255,0.24)",
+                    boxShadow: activeImage === index ? "0 0 0 2px rgba(191,155,94,0.2)" : "none",
+                    background: "rgba(5,5,14,0.72)",
+                  }}>
+                  <img src={thumbnail} alt="" className="w-full h-full object-cover" />
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {p.tag && (
           <div className="absolute top-4 left-4 rounded-full overflow-hidden px-3 py-1" style={{ ...G.goldHi }}>
@@ -293,6 +327,26 @@ export function ProductCard({ p, discount, onAdd }:{ p:Product; discount:MemberD
         <p className="text-[10px] tracking-widest uppercase mb-1" style={{ color:gold }}>{p.category}</p>
         <h3 className="font-medium text-sm mb-1" style={{ color:fg }}>{p.name}</h3>
         <p className="text-xs leading-relaxed mb-3" style={{ color:`${fg}33` }}>{p.description}</p>
+        <button
+          type="button"
+          onClick={() => setShowDetails(current => !current)}
+          className="text-[10px] tracking-widest uppercase mb-3"
+          style={{ color:gold }}>
+          <Bracket>{showDetails ? "Hide Details" : "More Details"}</Bracket>
+        </button>
+        <AnimatePresence initial={false}>
+          {showDetails && (
+            <motion.p
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+              className="text-xs leading-relaxed mb-3"
+              style={{ color:`${fg}50` }}>
+              {p.details}
+            </motion.p>
+          )}
+        </AnimatePresence>
         <div className="flex items-center justify-between pt-3" style={{ borderTop:"1px solid rgba(255,255,255,0.06)" }}>
           <span className="flex items-baseline gap-2">
             <span className="text-xl" style={{ fontFamily:bodoni, color:gold }}>R{memberUnitPrice(p.price, discount.percentage).toLocaleString()}</span>
@@ -442,7 +496,9 @@ export function EditorialStrip() {
 }
 
 // â”€â”€â”€ Club â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-export function Club({ tiers }:{ tiers:MembershipTier[] }) {
+export function Club({ tiers, onJoin, activePlanName, joiningPlanId, trialEndsAt, nextBillingDate }:
+  { tiers:MembershipTier[]; onJoin:(tier:MembershipTier)=>void; activePlanName:string|null;
+    joiningPlanId:string|null; trialEndsAt:string|null; nextBillingDate:string|null }) {
   useReveal(".club-card", { stagger:0.14 }, [tiers.length]);
   useReveal(".club-hdr");
   return (
@@ -456,7 +512,7 @@ export function Club({ tiers }:{ tiers:MembershipTier[] }) {
               The <span style={{ color:gold }}>AVRA</span> Club
             </h2>
             <p className="text-sm max-w-xs leading-relaxed" style={{ color:`${fg}38` }}>
-              More than a membership â€” a community of women becoming together, with intention and grace.
+              More than a membership - a community of women becoming together, with intention and grace.
             </p>
           </div>
         </div>
@@ -473,10 +529,17 @@ export function Club({ tiers }:{ tiers:MembershipTier[] }) {
               )}
               <Bracket className="text-[10px] tracking-widest uppercase mb-3 block"><span style={{ color:gold }}>{plan.tagline}</span></Bracket>
               <h3 className="text-lg font-medium mb-3" style={{ color:fg }}>{plan.name}</h3>
-              <div className="flex items-end gap-1 mb-6">
+              <div className="flex items-end gap-1 mb-2">
                 <span className="text-5xl" style={{ fontFamily:bodoni, color:fg }}>R{plan.price}</span>
                 <span className="text-xs mb-2" style={{ color:`${fg}28` }}>/month</span>
               </div>
+              <p className="text-[10px] tracking-widest uppercase mb-6" style={{ color:gold }}>
+                {activePlanName === plan.name && trialEndsAt
+                  ? `Free until ${new Date(trialEndsAt).toLocaleDateString()}`
+                  : activePlanName === plan.name && nextBillingDate
+                    ? `Renews ${new Date(nextBillingDate).toLocaleDateString()}`
+                    : "First month free"}
+              </p>
               <div className="mb-6 h-px" style={{ background:plan.highlight?"rgba(191,155,94,0.3)":"rgba(255,255,255,0.07)" }} />
               <ul className="space-y-3 mb-10 flex-1">
                 {plan.features.map(f => (
@@ -488,10 +551,16 @@ export function Club({ tiers }:{ tiers:MembershipTier[] }) {
                   </li>
                 ))}
               </ul>
-              <button className="relative w-full py-4 rounded-2xl text-xs font-semibold tracking-widest uppercase overflow-hidden transition-all"
+              <button onClick={()=>onJoin(plan)} disabled={joiningPlanId !== null || activePlanName === plan.name}
+                className="avra-btn relative w-full py-4 rounded-2xl text-xs font-semibold tracking-widest uppercase overflow-hidden transition-all disabled:opacity-70"
                 style={plan.highlight ? { background:goldGrad,color:bg,boxShadow:"0 4px 28px rgba(191,155,94,0.45)" } : { ...G.frosted,color:fg }}>
                 {!plan.highlight && <Shine />}
-                <Bracket>Join Now</Bracket>
+                <Bracket>
+                  {activePlanName === plan.name ? "Your Plan"
+                    : joiningPlanId === plan.id ? "Joining"
+                    : activePlanName ? "Switch to This"
+                    : "Start Free Month"}
+                </Bracket>
               </button>
             </TiltCard>
           ))}
@@ -591,17 +660,38 @@ export function Wellness({ programs }:{ programs:WellnessProgram[] }) {
 
 // â”€â”€â”€ Community â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export function Community({ communities }:{ communities:CommunityCircle[] }) {
+  const navigate = useNavigate();
   const [joinedCommunityId, setJoinedCommunityId] = useState<string|null>(null);
+  const [joiningCommunityId, setJoiningCommunityId] = useState<string|null>(null);
+  const [communityMessage, setCommunityMessage] = useState<string|null>(null);
   useReveal(".comm-r", {}, [communities.length]);
 
-  const joinCommunity = async (community: CommunityCircle) => {
-    setJoinedCommunityId(community.id);
+  const joinCommunity = async (community?: CommunityCircle) => {
+    if (!community) {
+      setCommunityMessage("Communities are still loading. Opening the Community Hub.");
+      navigate("/community");
+      return;
+    }
+
+    setJoiningCommunityId(community.id);
+    setCommunityMessage(null);
     try {
       await avraApi.communities.join(community.id);
+      setJoinedCommunityId(community.id);
+      setCommunityMessage(`Joined ${community.name}.`);
     } catch (error) {
       console.warn("Unable to join through CommunityService", error);
+      setCommunityMessage(isApiUnavailable(error)
+        ? "Community service is offline right now. Please try again shortly."
+        : "Could not join this community right now.");
+    } finally {
+      setJoiningCommunityId(null);
     }
   };
+
+  const featuredCommunity = communities[0];
+  const featuredJoining = joiningCommunityId === featuredCommunity?.id;
+  const featuredJoined = joinedCommunityId === featuredCommunity?.id;
 
   return (
     <section id="community" className="py-24 px-6 relative overflow-hidden">
@@ -632,8 +722,10 @@ export function Community({ communities }:{ communities:CommunityCircle[] }) {
               </div>
               <p className="text-sm font-medium mb-1" style={{ color:fg }}>{community.name}</p>
               <p className="text-xs mb-4" style={{ color:`${fg}33` }}>{community.memberCount.toLocaleString()} members / {community.category}</p>
-              <button onClick={()=>joinCommunity(community)} className="avra-btn text-[9px] font-bold tracking-widest uppercase px-4 py-2 rounded-full" style={{ background:joinedCommunityId===community.id?"rgba(255,255,255,0.10)":goldGrad, color:joinedCommunityId===community.id?fg:bg }}>
-                <Bracket>{joinedCommunityId===community.id ? "Joined" : "Join"}</Bracket>
+              <button onClick={()=>void joinCommunity(community)} className="avra-btn text-[9px] font-bold tracking-widest uppercase px-4 py-2 rounded-full" style={{ background:joinedCommunityId===community.id?"rgba(255,255,255,0.10)":goldGrad, color:joinedCommunityId===community.id?fg:bg }}>
+                <Bracket>
+                  {joiningCommunityId===community.id ? "Joining" : joinedCommunityId===community.id ? "Joined" : "Join"}
+                </Bracket>
               </button>
             </TiltCard>
           );})}
@@ -647,25 +739,126 @@ export function Community({ communities }:{ communities:CommunityCircle[] }) {
             </TiltCard>
           ))}
         </div>
-        <div className="comm-r"><GoldBtn onClick={()=>communities[0] && joinCommunity(communities[0])}><Bracket><span className="flex items-center gap-2">Join the Community <ArrowRight size={11}/></span></Bracket></GoldBtn></div>
+        <div className="comm-r space-y-3">
+          <GoldBtn onClick={()=>void joinCommunity(featuredCommunity)}>
+            <Bracket>
+              <span className="flex items-center gap-2">
+                {featuredCommunity
+                  ? (featuredJoining ? "Joining" : featuredJoined ? "Joined" : "Join the Community")
+                  : "Open Community Hub"}
+                <ArrowRight size={11}/>
+              </span>
+            </Bracket>
+          </GoldBtn>
+          {communityMessage && (
+            <p className="text-xs" style={{ color: `${fg}60` }}>{communityMessage}</p>
+          )}
+        </div>
       </div>
     </section>
   );
 }
 
 // â”€â”€â”€ Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-export function Events({ events }:{ events:AvraEvent[] }) {
+export function Events({ events, isMember }:{ events:AvraEvent[]; isMember:boolean }) {
   const [registeredEventId, setRegisteredEventId] = useState<string|null>(null);
+  const [openEventId, setOpenEventId] = useState<string|null>(null);
+  const [checkoutEventId, setCheckoutEventId] = useState<string|null>(null);
+  const [ticketCount, setTicketCount] = useState(1);
+  const [cardLast4, setCardLast4] = useState("");
+  const [processingPurchaseEventId, setProcessingPurchaseEventId] = useState<string|null>(null);
+  const [issuedTicketsByEvent, setIssuedTicketsByEvent] = useState<Record<string, EventTicketDto[]>>({});
+  const [eventMessage, setEventMessage] = useState<string|null>(null);
   useReveal(".evt-r", { stagger:0.12 }, [events.length]);
   useReveal(".evt-hdr");
 
-  const register = async (event: AvraEvent) => {
-    setRegisteredEventId(event.id);
+  const getApiMessage = (error: unknown, fallback: string) => {
+    if (!(error instanceof Error)) return fallback;
     try {
-      await avraApi.events.register(event.id);
+      const parsed = JSON.parse(error.message) as { message?: string };
+      return parsed.message || fallback;
+    } catch {
+      return error.message || fallback;
+    }
+  };
+
+  const rsvp = async (event: AvraEvent) => {
+    if (event.membersOnly && !isMember) {
+      setEventMessage("This event is for members only. Join the AVRA Club to unlock access.");
+      return;
+    }
+
+    setRegisteredEventId(event.id);
+    setEventMessage(null);
+    try {
+      await avraApi.events.register(event.id, 1, isMember);
+      setEventMessage("Your RSVP has been confirmed.");
     } catch (error) {
       console.warn("Unable to register through EventsService", error);
+      const detail = getApiMessage(error, "Could not complete registration right now.");
+      setEventMessage(detail.includes("members only")
+        ? "This event is reserved for members only."
+        : detail);
     }
+  };
+
+  const beginCheckout = (event: AvraEvent) => {
+    if (event.membersOnly && !isMember) {
+      setEventMessage("This event is for members only. Join the AVRA Club to unlock access.");
+      return;
+    }
+
+    setOpenEventId(event.id);
+    setCheckoutEventId(current => current === event.id ? null : event.id);
+    setTicketCount(1);
+    setCardLast4("");
+    setEventMessage(null);
+  };
+
+  const completePurchase = async (event: AvraEvent) => {
+    if (processingPurchaseEventId === event.id) {
+      return;
+    }
+
+    if (event.price === "Free") {
+      await rsvp(event);
+      return;
+    }
+
+    if (ticketCount <= 0) {
+      setEventMessage("Please choose at least one ticket.");
+      return;
+    }
+
+    if (!/^\d{4}$/.test(cardLast4.trim())) {
+      setEventMessage("Enter the last 4 digits of your card.");
+      return;
+    }
+
+    setProcessingPurchaseEventId(event.id);
+    setEventMessage(null);
+
+    try {
+      const purchase = await avraApi.events.purchase(event.id, {
+        numberOfTickets: ticketCount,
+        paymentMethod: "Card",
+        cardLast4: cardLast4.trim(),
+      });
+
+      setIssuedTicketsByEvent(current => ({ ...current, [event.id]: purchase.tickets }));
+      setRegisteredEventId(event.id);
+      setCheckoutEventId(null);
+      setEventMessage(`Payment successful. ${purchase.tickets.length} ticket(s) issued with QR code.`);
+    } catch (error) {
+      console.warn("Unable to purchase tickets through EventsService", error);
+      setEventMessage(getApiMessage(error, "Could not complete payment right now."));
+    } finally {
+      setProcessingPurchaseEventId(null);
+    }
+  };
+
+  const toggleDetails = (eventId: string) => {
+    setOpenEventId(current => current === eventId ? null : eventId);
   };
 
   return (
@@ -677,6 +870,7 @@ export function Events({ events }:{ events:AvraEvent[] }) {
           <h2 className="text-5xl md:text-6xl leading-[0.9]" style={{ fontFamily:bodoni, fontStyle:"italic", color:fg }}>
             Experience <span style={{ color:gold }}>AVRA</span>
           </h2>
+          {eventMessage && <p className="text-xs mt-4" style={{ color:`${fg}58` }}>{eventMessage}</p>}
         </div>
         <div className="grid md:grid-cols-2 gap-5">
           {events.map(ev => (
@@ -689,6 +883,11 @@ export function Events({ events }:{ events:AvraEvent[] }) {
                   <Shine gold />
                   <Bracket><span className="text-[9px] font-bold tracking-widest uppercase" style={{ color:gold }}>{ev.category}</span></Bracket>
                 </div>
+                {ev.membersOnly && (
+                  <div className="absolute top-14 right-4 rounded-full overflow-hidden px-3 py-1" style={{ ...G.frosted }}>
+                    <Bracket><span className="text-[9px] font-bold tracking-widest uppercase" style={{ color:fg }}>Members only</span></Bracket>
+                  </div>
+                )}
               </div>
               <div className="p-6">
                 <h3 className="text-base font-semibold mb-4" style={{ color:fg }}>{ev.title}</h3>
@@ -699,12 +898,76 @@ export function Events({ events }:{ events:AvraEvent[] }) {
                     </div>
                   ))}
                 </div>
-                <div className="flex items-center justify-between pt-4" style={{ borderTop:"1px solid rgba(255,255,255,0.07)" }}>
+                <div className="flex items-center justify-between gap-3 pt-4" style={{ borderTop:"1px solid rgba(255,255,255,0.07)" }}>
                   <span className="text-2xl" style={{ fontFamily:bodoni, color:gold }}>
                     {ev.price==="Free" ? <Bracket>Free</Bracket> : `R${(ev.price as number).toLocaleString()}`}
                   </span>
-                  <GoldBtn small onClick={()=>register(ev)}><Bracket>{registeredEventId===ev.id ? "Registered" : "Register"}</Bracket></GoldBtn>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={()=>toggleDetails(ev.id)}
+                      className="avra-btn text-[10px] px-4 py-2 rounded-full tracking-widest uppercase"
+                      style={{ ...G.frosted, color:fg }}>
+                      <Bracket>{openEventId===ev.id ? "Hide Details" : "View Details"}</Bracket>
+                    </button>
+                    <GoldBtn small onClick={()=>void (ev.price === "Free" ? rsvp(ev) : beginCheckout(ev))}>
+                      <Bracket>
+                        {registeredEventId===ev.id
+                          ? (ev.price === "Free" ? "RSVPed" : "Buy More")
+                          : (ev.price === "Free" ? "RSVP" : "Buy Tickets")}
+                      </Bracket>
+                    </GoldBtn>
+                  </div>
                 </div>
+                {openEventId === ev.id && (
+                  <div className="mt-4 rounded-2xl p-4 text-xs leading-relaxed" style={{ ...G.frosted, color:`${fg}66` }}>
+                    <p>{ev.description}</p>
+                    {ev.membersOnly && !isMember && (
+                      <p className="mt-2" style={{ color:gold }}>Join the AVRA Club to buy tickets for this members-only event.</p>
+                    )}
+                    {checkoutEventId === ev.id && ev.price !== "Free" && (
+                      <div className="mt-4 rounded-2xl p-4" style={{ ...G.soft }}>
+                        <p className="text-[10px] tracking-widest uppercase mb-3" style={{ color:`${fg}46` }}>Secure Checkout</p>
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="text-[10px] tracking-widest uppercase" style={{ color:`${fg}46` }}>
+                            Tickets
+                            <input type="number" min={1} value={ticketCount} onChange={event => setTicketCount(Number(event.target.value) || 1)}
+                              className="mt-2 w-full rounded-xl px-3 py-2 text-xs"
+                              style={{ ...G.frosted, color:fg }} />
+                          </label>
+                          <label className="text-[10px] tracking-widest uppercase" style={{ color:`${fg}46` }}>
+                            Card last 4
+                            <input maxLength={4} value={cardLast4} onChange={event => setCardLast4(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                              className="mt-2 w-full rounded-xl px-3 py-2 text-xs"
+                              style={{ ...G.frosted, color:fg }} placeholder="1234" />
+                          </label>
+                        </div>
+                        <div className="mt-3 flex items-center justify-between">
+                          <span className="text-sm" style={{ color:gold }}>
+                            Total {money((ev.price as number) * ticketCount)}
+                          </span>
+                          <GoldBtn small onClick={()=>void completePurchase(ev)} className="disabled:opacity-60"
+                            >
+                            <Bracket>{processingPurchaseEventId === ev.id ? "Processing" : "Pay & Issue Ticket"}</Bracket>
+                          </GoldBtn>
+                        </div>
+                      </div>
+                    )}
+                    {(issuedTicketsByEvent[ev.id]?.length ?? 0) > 0 && (
+                      <div className="mt-4 grid gap-3">
+                        {issuedTicketsByEvent[ev.id].map(ticket => (
+                          <div key={ticket.id} className="rounded-2xl p-3 flex items-center gap-3" style={{ ...G.soft }}>
+                            <img src={`data:image/png;base64,${ticket.qrCodePngBase64}`} alt={`QR ticket ${ticket.ticketNumber}`}
+                              className="w-20 h-20 rounded-lg bg-white p-1" />
+                            <div>
+                              <p className="text-[10px] tracking-widest uppercase" style={{ color:`${fg}46` }}>Ticket issued</p>
+                              <p className="text-xs font-semibold" style={{ color:fg }}>{ticket.ticketNumber}</p>
+                              <p className="text-[10px]" style={{ color:`${fg}46` }}>{new Date(ticket.issuedAt).toLocaleString()}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </TiltCard>
           ))}

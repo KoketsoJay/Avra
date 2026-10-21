@@ -22,7 +22,9 @@ builder.Services.AddScoped<IPostService, PostService>();
 var app = builder.Build();
 
 app.UseAvraServiceDefaults();
+await app.BaselineMigrationsForLegacyDatabaseAsync();
 await app.InitializeDatabaseAsync<CommunityDbContext>();
+await app.EnsureLatestCommunitySchemaAsync();
 
 try
 {

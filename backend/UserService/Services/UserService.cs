@@ -1,5 +1,6 @@
-using Avra.ServiceDefaults.Security;
+﻿using Avra.ServiceDefaults.Security;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using UserService.Data;
 using UserService.Models;
 
@@ -14,8 +15,10 @@ public interface IUserService
     Task<AuthResponse?> LoginAsync(LoginDto loginDto);
     Task<UserDto?> GetUserByIdAsync(string userId);
     Task<UserDto?> GetUserByEmailAsync(string email);
-    Task<IReadOnlyList<UserDto>> SearchUsersAsync(string? term, int limit = 20);
+    Task<IReadOnlyList<UserDto>> SearchUsersAsync(string? term, int limit = 20, bool includeInactive = false);
     Task<UserDto> UpdateProfileAsync(string userId, UpdateProfileDto updateDto);
+    Task<UserDto> SetRoleAsync(string userId, string role);
+    Task<UserDto> SetActiveAsync(string userId, bool isActive);
     Task<bool> DeleteUserAsync(string userId);
 }
 
@@ -28,6 +31,7 @@ public interface IMembershipService
     Task<MembershipPlanDto?> SetPlanDiscountAsync(string planId, decimal discountPercentage);
     Task<EffectiveDiscountDto> GetEffectiveDiscountAsync(string userId);
     Task<IReadOnlyList<MemberDiscountDto>> GetMemberDiscountsAsync();
+    Task<IReadOnlyList<MembershipInvoiceDto>> GetInvoicesAsync(string userId);
     Task<MemberDiscountDto?> GrantMemberDiscountAsync(string userId, GrantMemberDiscountDto grant, string grantedBy);
     Task<bool> RevokeMemberDiscountAsync(string userId);
     Task<UserMembershipDto> CreateMembershipAsync(string userId, string planName);
@@ -149,9 +153,14 @@ public class UserService : IUserService
         return user == null ? null : MapToDto(user);
     }
 
-    public async Task<IReadOnlyList<UserDto>> SearchUsersAsync(string? term, int limit = 20)
+    public async Task<IReadOnlyList<UserDto>> SearchUsersAsync(string? term, int limit = 20, bool includeInactive = false)
     {
-        var query = _context.Users.AsNoTracking().Where(u => u.IsActive);
+        var query = _context.Users.AsNoTracking().AsQueryable();
+
+        if (!includeInactive)
+        {
+            query = query.Where(u => u.IsActive);
+        }
 
         if (!string.IsNullOrWhiteSpace(term))
         {
@@ -213,6 +222,38 @@ public class UserService : IUserService
         return true;
     }
 
+    public async Task<UserDto> SetRoleAsync(string userId, string role)
+    {
+        var normalised = (role ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalised != AvraRoles.Administrator && normalised != AvraRoles.Customer)
+        {
+            throw new InvalidOperationException($"Role must be '{AvraRoles.Administrator}' or '{AvraRoles.Customer}'.");
+        }
+
+        var user = await _context.Users.FindAsync(userId)
+            ?? throw new KeyNotFoundException($"User with id {userId} not found");
+
+        user.Role = normalised;
+        user.UpdatedAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation("Role for user {UserId} set to {Role}", userId, normalised);
+        return MapToDto(user);
+    }
+
+    public async Task<UserDto> SetActiveAsync(string userId, bool isActive)
+    {
+        var user = await _context.Users.FindAsync(userId)
+            ?? throw new KeyNotFoundException($"User with id {userId} not found");
+
+        user.IsActive = isActive;
+        user.UpdatedAt = DateTime.UtcNow;
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation("User {UserId} active state set to {IsActive}", userId, isActive);
+        return MapToDto(user);
+    }
+
     private static UserDto MapToDto(User user)
     {
         return new UserDto
@@ -236,11 +277,14 @@ public class UserService : IUserService
 public class MembershipService : IMembershipService
 {
     private readonly UserDbContext _context;
+    private readonly MembershipBillingOptions _billing;
     private readonly ILogger<MembershipService> _logger;
 
-    public MembershipService(UserDbContext context, ILogger<MembershipService> logger)
+    public MembershipService(UserDbContext context, IOptions<MembershipBillingOptions> billing, ILogger<MembershipService> logger)
     {
+        ArgumentNullException.ThrowIfNull(billing);
         _context = context;
+        _billing = billing.Value;
         _logger = logger;
     }
 
@@ -314,7 +358,7 @@ public class MembershipService : IMembershipService
 
         var membership = await _context.UserMemberships
             .AsNoTracking()
-            .FirstOrDefaultAsync(m => m.UserId == userId && m.Status == MembershipStatus.Active);
+            .FirstOrDefaultAsync(m => m.UserId == userId && (m.Status == MembershipStatus.Active || m.Status == MembershipStatus.Trialing));
 
         if (membership is not null)
         {
@@ -350,7 +394,7 @@ public class MembershipService : IMembershipService
 
         var memberships = await _context.UserMemberships
             .AsNoTracking()
-            .Where(m => m.Status == MembershipStatus.Active)
+            .Where(m => m.Status == MembershipStatus.Active || m.Status == MembershipStatus.Trialing)
             .ToListAsync();
 
         return rows.Select(x => new MemberDiscountDto
@@ -408,7 +452,7 @@ public class MembershipService : IMembershipService
 
         var membership = await _context.UserMemberships
             .AsNoTracking()
-            .FirstOrDefaultAsync(m => m.UserId == userId && m.Status == MembershipStatus.Active);
+            .FirstOrDefaultAsync(m => m.UserId == userId && (m.Status == MembershipStatus.Active || m.Status == MembershipStatus.Trialing));
 
         return new MemberDiscountDto
         {
@@ -448,21 +492,68 @@ public class MembershipService : IMembershipService
     {
         _logger.LogInformation("Creating membership for user: {UserId}, Plan: {PlanName}", userId, planName);
 
+        var now = DateTime.UtcNow;
+        var trialEnds = now.AddDays(_billing.TrialDays);
+        var plan = await _context.MembershipPlans.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Name == planName && p.IsActive);
+
+        // Switching tiers replaces the old membership rather than stacking a second one.
+        var existing = await _context.UserMemberships
+            .Where(m => m.UserId == userId && (m.Status == MembershipStatus.Trialing || m.Status == MembershipStatus.Active))
+            .ToListAsync();
+
+        foreach (var previous in existing)
+        {
+            previous.Status = MembershipStatus.Cancelled;
+            previous.EndDate = now;
+            previous.NextBillingDate = null;
+        }
+
+        // A repeat subscriber does not get another free month.
+        var hasTrialedBefore = await _context.UserMemberships.AnyAsync(m => m.UserId == userId);
+
         var membership = new UserMembership
         {
             UserId = userId,
             PlanName = planName,
-            Status = MembershipStatus.Active,
-            StartDate = DateTime.UtcNow,
-            AutoRenew = true
+            Status = hasTrialedBefore ? MembershipStatus.Active : MembershipStatus.Trialing,
+            StartDate = now,
+            AutoRenew = true,
+            MonthlyPrice = plan?.MonthlyPrice ?? 0m,
+            TrialEndsAt = hasTrialedBefore ? null : trialEnds,
+            // The first charge falls due when the trial ends; a returning member is billed at once.
+            NextBillingDate = hasTrialedBefore ? now : trialEnds,
         };
 
         _context.UserMemberships.Add(membership);
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation("Membership created successfully with id: {MembershipId}", membership.Id);
+        _logger.LogInformation(
+            "Membership {MembershipId} created for {UserId}; status {Status}, first bill {NextBillingDate:u}",
+            membership.Id, userId, membership.Status, membership.NextBillingDate);
 
         return MapToDto(membership);
+    }
+
+    public async Task<IReadOnlyList<MembershipInvoiceDto>> GetInvoicesAsync(string userId)
+    {
+        return await _context.MembershipInvoices
+            .AsNoTracking()
+            .Where(i => i.UserId == userId)
+            .OrderByDescending(i => i.CreatedAt)
+            .Select(i => new MembershipInvoiceDto
+            {
+                Id = i.Id,
+                PlanName = i.PlanName,
+                Amount = i.Amount,
+                PeriodStart = i.PeriodStart,
+                PeriodEnd = i.PeriodEnd,
+                Status = i.Status,
+                FailureReason = i.FailureReason,
+                CreatedAt = i.CreatedAt,
+                SettledAt = i.SettledAt,
+            })
+            .ToListAsync();
     }
 
     public async Task<UserMembershipDto?> GetMembershipByUserIdAsync(string userId)
@@ -470,7 +561,7 @@ public class MembershipService : IMembershipService
         _logger.LogInformation("Fetching membership for user: {UserId}", userId);
 
         var membership = await _context.UserMemberships
-            .FirstOrDefaultAsync(m => m.UserId == userId && m.Status == MembershipStatus.Active);
+            .FirstOrDefaultAsync(m => m.UserId == userId && (m.Status == MembershipStatus.Active || m.Status == MembershipStatus.Trialing));
 
         return membership == null ? null : MapToDto(membership);
     }
@@ -522,7 +613,12 @@ public class MembershipService : IMembershipService
             Status = membership.Status,
             StartDate = membership.StartDate,
             EndDate = membership.EndDate,
-            AutoRenew = membership.AutoRenew
+            AutoRenew = membership.AutoRenew,
+            TrialEndsAt = membership.TrialEndsAt,
+            NextBillingDate = membership.NextBillingDate,
+            MonthlyPrice = membership.MonthlyPrice,
+            IsInTrial = membership.IsInTrial(DateTime.UtcNow),
         };
     }
 }
+

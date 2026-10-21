@@ -26,5 +26,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "admin", "vite.config.ts", "vite.admin.config.ts"]
+  "include": ["src", "admin"],
+  "exclude": ["src/app/components/ui", "src/imports"]
 }

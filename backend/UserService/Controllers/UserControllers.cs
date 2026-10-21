@@ -106,17 +106,18 @@ public class UsersController : ControllerBase
     }
 
     /// <summary>
-    /// Search active members. Administrators only — used to pick who receives a discount.
+    /// Search members. Administrators only.
     /// </summary>
     /// <param name="term">Matches email, first name or last name. Omit to list the first page.</param>
+    /// <param name="includeInactive">When true, deactivated accounts are included (for management).</param>
     [HttpGet("search")]
     [Authorize(Policy = AvraPolicies.AdministratorOnly)]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<ActionResult<IReadOnlyList<UserDto>>> SearchUsers([FromQuery] string? term)
+    public async Task<ActionResult<IReadOnlyList<UserDto>>> SearchUsers([FromQuery] string? term, [FromQuery] bool includeInactive = false)
     {
         try
         {
-            return Ok(await _userService.SearchUsersAsync(term));
+            return Ok(await _userService.SearchUsersAsync(term, 50, includeInactive));
         }
         catch (Exception ex)
         {
@@ -208,6 +209,59 @@ public class UsersController : ControllerBase
         {
             _logger.LogError(ex, "Error deleting user with id {UserId}", userId);
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error deleting user" });
+        }
+    }
+
+    /// <summary>
+    /// Set a member's role. Administrators only.
+    /// </summary>
+    [HttpPut("{userId}/role")]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<UserDto>> SetRole(string userId, SetRoleDto dto)
+    {
+        try
+        {
+            return Ok(await _userService.SetRoleAsync(userId, dto.Role));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error setting role for user {UserId}", userId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error setting role" });
+        }
+    }
+
+    /// <summary>
+    /// Activate or deactivate a member's account. Administrators only.
+    /// </summary>
+    [HttpPut("{userId}/status")]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<UserDto>> SetStatus(string userId, SetActiveDto dto)
+    {
+        try
+        {
+            return Ok(await _userService.SetActiveAsync(userId, dto.IsActive));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error setting status for user {UserId}", userId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error setting status" });
         }
     }
 }
@@ -387,10 +441,16 @@ public class MembershipsController : ControllerBase
     /// <param name="userId">User ID</param>
     /// <returns>User membership details or null</returns>
     [HttpGet("user/{userId}")]
+    [Authorize]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<UserMembershipDto>> GetUserMembership(string userId)
     {
+        if (!IsSelfOrAdministrator(userId))
+        {
+            return Forbid();
+        }
+
         try
         {
             var membership = await _membershipService.GetMembershipByUserIdAsync(userId);
@@ -408,21 +468,35 @@ public class MembershipsController : ControllerBase
     }
 
     /// <summary>
-    /// Create new membership for user
+    /// Enrol a user on a membership tier
     /// </summary>
     /// <param name="userId">User ID</param>
     /// <param name="planName">Membership plan name</param>
     /// <returns>Created membership</returns>
     [HttpPost("user/{userId}")]
+    [Authorize]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<UserMembershipDto>> CreateMembership(string userId, [FromQuery] string planName)
     {
+        // A shopper may only enrol themselves; the tier carries a discount, so this must not be open.
+        if (!IsSelfOrAdministrator(userId))
+        {
+            return Forbid();
+        }
+
         try
         {
             if (string.IsNullOrWhiteSpace(planName))
             {
                 return BadRequest(new { message = "Plan name is required" });
+            }
+
+            // Only a real, active tier may be joined, or the discount lookup could be gamed.
+            var plans = await _membershipService.GetPlansAsync();
+            if (!plans.Any(plan => string.Equals(plan.Name, planName, StringComparison.OrdinalIgnoreCase)))
+            {
+                return BadRequest(new { message = $"'{planName}' is not an available membership plan" });
             }
 
             var membership = await _membershipService.CreateMembershipAsync(userId, planName);
@@ -434,6 +508,35 @@ public class MembershipsController : ControllerBase
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error creating membership" });
         }
     }
+
+    /// <summary>
+    /// The signed-in member's billing history.
+    /// </summary>
+    [HttpGet("invoices")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<MembershipInvoiceDto>>> GetMyInvoices()
+    {
+        var userId = _currentUser.UserId;
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Forbid();
+        }
+
+        try
+        {
+            return Ok(await _membershipService.GetInvoicesAsync(userId));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching invoices");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error fetching invoices" });
+        }
+    }
+
+    /// <summary>True when the caller is acting on their own record, or is an administrator.</summary>
+    private bool IsSelfOrAdministrator(string userId) =>
+        string.Equals(_currentUser.UserId, userId, StringComparison.Ordinal) || User.IsInRole(AvraRoles.Administrator);
 
     /// <summary>
     /// Cancel user membership

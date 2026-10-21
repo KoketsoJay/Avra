@@ -13,8 +13,19 @@ import {
 } from "@/app/api/avraApi";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-export interface Product { id:number; name:string; price:number; category:string; img1:string; img2:string; description:string; tag?:string; }
-export interface AvraEvent { id:string; title:string; date:string; time:string; location:string; image:string; price:number|"Free"; category:string; }
+export interface Product {
+  id:number;
+  name:string;
+  price:number;
+  category:string;
+  img1:string;
+  img2:string;
+  images:string[];
+  description:string;
+  details:string;
+  tag?:string;
+}
+export interface AvraEvent { id:string; title:string; description:string; date:string; time:string; location:string; image:string; price:number|"Free"; category:string; membersOnly:boolean; }
 export interface CommunityCircle { id:string; name:string; description:string; category:string; memberCount:number; image:string; }
 export interface WellnessProgram { id:string; name:string; description:string; category:string; level:string; durationDays:number; price:number; image:string; }
 export interface MembershipTier { id:string; name:string; tagline:string; price:number; highlight:boolean; features:string[]; discountPercentage:number; }
@@ -54,16 +65,30 @@ export function toCurrencyPrice(price: number) {
   return Number.isFinite(price) ? price : 0;
 }
 
+function normaliseProductImages(...sources: Array<Array<string | null | undefined> | undefined>) {
+  const images = sources
+    .flatMap(source => source ?? [])
+    .map(image => (image ?? "").trim())
+    .filter(Boolean)
+    .filter((image, index, all) => all.findIndex(candidate => candidate.toLowerCase() === image.toLowerCase()) === index);
+
+  return images.length > 0 ? images : [...DEFAULT_PRODUCT_IMAGES];
+}
+
 // ─── DTO mapping ──────────────────────────────────────────────────────────────
 export function mapProductDto(product: ProductDto): Product {
+  const images = normaliseProductImages(product.imageUrls ?? undefined, [product.image1, product.image2]);
+
   return {
     id: product.id,
     name: product.name,
     price: toCurrencyPrice(product.price),
     category: product.category,
-    img1: product.image1 ?? "",
-    img2: product.image2 ?? product.image1 ?? "",
+    img1: images[0] ?? "",
+    img2: images[1] ?? images[0] ?? "",
+    images,
     description: product.description,
+    details: product.details?.trim() || product.description,
     tag: product.tag || undefined,
   };
 }
@@ -87,12 +112,14 @@ export function mapEventDto(event: EventDto): AvraEvent {
   return {
     id: event.id,
     title: event.title,
+    description: event.description,
     date: formatEventDate(event.startDate, event.endDate),
     time: formatEventTime(event.startDate),
     location: event.location,
     image: event.imageUrl ?? "",
     price: event.price === 0 ? "Free" : toCurrencyPrice(event.price),
     category: event.category,
+    membersOnly: event.isMembersOnly,
   };
 }
 
@@ -134,15 +161,19 @@ export function mapMembershipPlanDto(plan: MembershipPlanDto): MembershipTier {
 
 // ─── Payloads ─────────────────────────────────────────────────────────────────
 export function productPayload(product: Product): ProductPayload {
+  const images = normaliseProductImages(product.images, [product.img1, product.img2]);
+
   return {
     name: product.name,
     description: product.description,
+    details: product.details,
     price: product.price,
     category: product.category,
     stock: 25,
     tag: product.tag,
-    image1: product.img1,
-    image2: product.img2,
+    image1: images[0],
+    image2: images[1] ?? images[0],
+    imageUrls: images,
   };
 }
 
@@ -154,7 +185,7 @@ export function eventPayload(event: AvraEvent): EventPayload {
 
   return {
     title: event.title,
-    description: `${event.title} hosted by AVRA.`,
+    description: event.description || `${event.title} hosted by AVRA.`,
     category: event.category,
     location: event.location,
     startDate: safeStart.toISOString(),
@@ -163,6 +194,7 @@ export function eventPayload(event: AvraEvent): EventPayload {
     price: event.price === "Free" ? 0 : event.price,
     organizer: "AVRA",
     imageUrl: event.image,
+    isMembersOnly: event.membersOnly,
     publishImmediately: true,
   };
 }

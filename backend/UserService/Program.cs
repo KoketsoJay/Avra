@@ -20,6 +20,10 @@ builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IUserService, UserService.Services.UserService>();
 builder.Services.AddScoped<IMembershipService, UserService.Services.MembershipService>();
 
+builder.Services.Configure<MembershipBillingOptions>(
+    builder.Configuration.GetSection(MembershipBillingOptions.SectionName));
+builder.Services.AddHostedService<MembershipBillingService>();
+
 var app = builder.Build();
 
 app.UseAvraServiceDefaults();

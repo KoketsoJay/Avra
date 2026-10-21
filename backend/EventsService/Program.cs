@@ -1,4 +1,5 @@
 using Avra.ServiceDefaults;
+using Avra.ServiceDefaults.Storage;
 using EventsService.Data;
 using EventsService.Services;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +8,8 @@ using Serilog;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddAvraServiceDefaults("events-service");
+
+builder.AddAvraImageStorage();
 
 builder.Services.AddDbContext<EventsDbContext>(options =>
     options.UseSqlServer(
@@ -18,11 +21,14 @@ builder.Services.AddHealthChecks().AddDbContextCheck<EventsDbContext>("events-db
 builder.Services.AddScoped<IEventService, EventService>();
 builder.Services.AddScoped<IRegistrationService, RegistrationService>();
 builder.Services.AddScoped<IPromotionService, PromotionService>();
+builder.Services.AddMembershipAccess(builder.Configuration);
+builder.Services.AddPaymentGateway(builder.Configuration);
 
 var app = builder.Build();
 
 app.UseAvraServiceDefaults();
 await app.InitializeDatabaseAsync<EventsDbContext>();
+await app.EnsureLatestEventsSchemaAsync();
 
 try
 {

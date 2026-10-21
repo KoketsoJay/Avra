@@ -19,24 +19,28 @@ export interface ProductDto {
   id: number;
   name: string;
   description: string;
+  details?: string | null;
   price: number;
   category: string;
   stock: number;
   tag?: string | null;
   image1?: string | null;
   image2?: string | null;
+  imageUrls?: string[] | null;
   isActive: boolean;
 }
 
 export interface ProductPayload {
   name: string;
   description: string;
+  details?: string;
   price: number;
   category: string;
   stock: number;
   tag?: string;
   image1?: string;
   image2?: string;
+  imageUrls?: string[];
 }
 
 export interface CartDto {
@@ -176,6 +180,7 @@ export interface EventDto {
   imageUrl?: string | null;
   status: number | string;
   isFeatured: boolean;
+  isMembersOnly: boolean;
 }
 
 export interface EventPayload {
@@ -190,8 +195,65 @@ export interface EventPayload {
   organizer: string;
   imageUrl?: string;
   isFeatured?: boolean;
+  isMembersOnly?: boolean;
   /** When false the event is stored as a draft and stays off the storefront. */
   publishImmediately?: boolean;
+}
+
+export interface EventTicketDto {
+  id: string;
+  registrationId: string;
+  eventId: string;
+  userId: string;
+  ticketNumber: string;
+  qrCodePayload: string;
+  qrCodePngBase64: string;
+  issuedAt: string;
+}
+
+export interface EventTicketPurchasePayload {
+  numberOfTickets: number;
+  paymentMethod: string;
+  cardLast4: string;
+}
+
+export interface EventTicketPurchaseDto {
+  eventId: string;
+  eventTitle: string;
+  userId: string;
+  numberOfTickets: number;
+  amountPaid: number;
+  paymentMethod: string;
+  paymentStatus: string;
+  registration: EventRegistrationDto;
+  tickets: EventTicketDto[];
+}
+
+export interface UserEventTicketDto {
+  id: string;
+  registrationId: string;
+  eventId: string;
+  eventTitle: string;
+  eventLocation: string;
+  eventStartDate: string;
+  eventEndDate: string;
+  ticketNumber: string;
+  qrCodePayload: string;
+  qrCodePngBase64: string;
+  issuedAt: string;
+  isCancelled: boolean;
+}
+
+export interface ValidateEventTicketPayload {
+  ticketNumber: string;
+  eventId?: string;
+}
+
+export interface EventTicketValidationResultDto {
+  isValid: boolean;
+  status: string;
+  message: string;
+  ticket?: UserEventTicketDto | null;
 }
 
 /** Publication state of a promotion, matching the EventsService PromotionStatus enum. */
@@ -273,6 +335,119 @@ export interface CommunityPayload {
   isPublic: boolean;
 }
 
+export interface CommunityMemberDto {
+  id: string;
+  communityId: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string | null;
+  role: number | string;
+  joinedAt: string;
+  isActive: boolean;
+}
+
+export interface CommunityMembershipDto {
+  communityId: string;
+  communityName: string;
+  communityCategory: string;
+  communityImageUrl?: string | null;
+  role: number | string;
+  joinedAt: string;
+}
+
+export interface CreateCommunityPostPayload {
+  communityId: string;
+  title: string;
+  content: string;
+}
+
+export interface UpdateCommunityPostPayload {
+  title: string;
+  content: string;
+}
+
+export interface CommunityPostDto {
+  id: string;
+  communityId: string;
+  userId: string;
+  userName: string;
+  title: string;
+  content: string;
+  likeCount: number;
+  commentCount: number;
+  isPinned: boolean;
+  isHidden: boolean;
+  hiddenReason?: string | null;
+  likedByCurrentUser: boolean;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
+export interface CreateCommunityCommentPayload {
+  postId: string;
+  content: string;
+}
+
+export interface UpdateCommunityCommentPayload {
+  content: string;
+}
+
+export interface CommunityCommentDto {
+  id: string;
+  postId: string;
+  communityId: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string | null;
+  content: string;
+  isHidden: boolean;
+  hiddenReason?: string | null;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
+export interface CreateCommunityReportPayload {
+  communityId: string;
+  postId?: string;
+  commentId?: string;
+  reason: string;
+  details?: string;
+}
+
+export interface CommunityReportDto {
+  id: string;
+  communityId: string;
+  postId?: string | null;
+  commentId?: string | null;
+  reportedByUserId: string;
+  reportedByUserName: string;
+  reason: string;
+  details?: string | null;
+  status: number | string;
+  resolutionNotes?: string | null;
+  reviewedByUserId?: string | null;
+  reviewedAt?: string | null;
+  createdAt: string;
+}
+
+export interface ResolveCommunityReportPayload {
+  status: number | string;
+  resolutionNotes?: string;
+}
+
+export interface UpdateCommunityStatusPayload {
+  status: string;
+}
+
+export interface SetCommunityMemberRolePayload {
+  role: number | string;
+}
+
+export interface SetCommunityContentVisibilityPayload {
+  hidden: boolean;
+  reason?: string;
+}
+
 export interface WellnessPlanDto {
   id: string;
   name: string;
@@ -346,6 +521,23 @@ export interface GrantMemberDiscountPayload {
   percentage: number;
   reason: string;
   expiresAt?: string | null;
+}
+
+/** Matches the UserService MembershipStatus enum ordering. */
+export const MEMBERSHIP_STATUS_LABELS = ["Active", "Inactive", "Paused", "Cancelled", "Expired", "Trialing", "Lapsed"] as const;
+
+export interface UserMembershipDto {
+  id: number;
+  userId: string;
+  planName: string;
+  status: number | string;
+  startDate: string;
+  endDate?: string | null;
+  autoRenew: boolean;
+  trialEndsAt?: string | null;
+  nextBillingDate?: string | null;
+  monthlyPrice: number;
+  isInTrial: boolean;
 }
 
 export interface UserProfileDto {
@@ -449,6 +641,33 @@ async function request<T>(service: ServiceName, path: string, init: RequestInit 
   return response.json() as Promise<T>;
 }
 
+/** The stored reference to persist plus a short-lived signed URL to preview the upload. */
+export interface ImageUploadResult {
+  reference: string;
+  url?: string | null;
+}
+
+/** Uploads an image file (multipart) to a service's blob-backed image endpoint. Admin only. */
+async function uploadImage(service: ServiceName, path: string, file: File): Promise<ImageUploadResult> {
+  const token = getStoredToken();
+  const headers = new Headers();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const body = new FormData();
+  body.append("file", file);
+
+  const response = await fetch(`${API_BASE_URLS[service]}${path}`, { method: "POST", headers, body });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `${response.status} ${response.statusText}`);
+  }
+
+  return response.json() as Promise<ImageUploadResult>;
+}
+
 export function getAvraUser() {
   let userId = localStorage.getItem("avra_user_id");
 
@@ -500,6 +719,7 @@ export const avraApi = {
     delete: (productId: number) => request<void>("products", `/api/products/${productId}`, {
       method: "DELETE",
     }),
+    uploadImage: (file: File) => uploadImage("products", "/api/products/images", file),
   },
   /** Warehouse operations. Every call requires the administrator role. */
   inventory: {
@@ -612,9 +832,49 @@ export const avraApi = {
     /** Member lookup for the discounts panel. Administrators only. */
     search: (term: string) =>
       request<UserProfileDto[]>("users", `/api/users/search?term=${encodeURIComponent(term)}`),
+    /** Admin member search; includeInactive surfaces deactivated accounts for management. */
+    searchAdmin: (term: string, includeInactive = false) =>
+      request<UserProfileDto[]>(
+        "users",
+        `/api/users/search?term=${encodeURIComponent(term)}&includeInactive=${includeInactive}`,
+      ),
+    /** Admin edit of another member's profile. Does not touch the local session. */
+    adminUpdateProfile: (userId: string, payload: { firstName: string; lastName: string; phoneNumber?: string; avatar?: string }) =>
+      request<UserProfileDto>("users", `/api/users/${encodeURIComponent(userId)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }),
+    /** Promote or demote a member. Administrators only. */
+    setRole: (userId: string, role: "administrator" | "customer") =>
+      request<UserProfileDto>("users", `/api/users/${encodeURIComponent(userId)}/role`, {
+        method: "PUT",
+        body: JSON.stringify({ role }),
+      }),
+    /** Activate or deactivate a member. Administrators only. */
+    setActive: (userId: string, isActive: boolean) =>
+      request<UserProfileDto>("users", `/api/users/${encodeURIComponent(userId)}/status`, {
+        method: "PUT",
+        body: JSON.stringify({ isActive }),
+      }),
+    /** Soft-deletes (deactivates) a member. Administrators only. */
+    remove: (userId: string) =>
+      request<void>("users", `/api/users/${encodeURIComponent(userId)}`, { method: "DELETE" }),
   },
   memberships: {
     plans: () => request<MembershipPlanDto[]>("users", "/api/memberships/plans"),
+    /** The signed-in shopper's current tier, or null when they hold none. */
+    mine: async (userId: string) => {
+      try {
+        return await request<UserMembershipDto>("users", `/api/memberships/user/${encodeURIComponent(userId)}`);
+      } catch {
+        return null;
+      }
+    },
+    /** Enrols the signed-in shopper on a tier. The service only permits acting on your own account. */
+    join: (userId: string, planName: string) =>
+      request<UserMembershipDto>("users", `/api/memberships/user/${encodeURIComponent(userId)}?planName=${encodeURIComponent(planName)}`, {
+        method: "POST",
+      }),
     /** The signed-in shopper's own rate. Requires a session. */
     myDiscount: () => request<EffectiveDiscountDto>("users", "/api/memberships/discount/me"),
     /** Sets the rate every member on a tier receives. Administrators only. */
@@ -645,6 +905,7 @@ export const avraApi = {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
+    uploadImage: (file: File) => uploadImage("events", "/api/events/images", file),
     publish: (eventId: string) => request<EventDto>("events", `/api/events/${encodeURIComponent(eventId)}/publish`, {
       method: "PUT",
     }),
@@ -654,18 +915,43 @@ export const avraApi = {
     delete: (eventId: string) => request<void>("events", `/api/events/${encodeURIComponent(eventId)}`, {
       method: "DELETE",
     }),
-    register: (eventId: string, attendeeCount = 1) => {
+    register: (eventId: string, attendeeCount = 1, isMember = false) => {
       const user = getAvraUser();
-      return request("events", `/api/registrations/events/${encodeURIComponent(eventId)}/register`, {
+      return request<EventRegistrationDto>("events", `/api/registrations/events/${encodeURIComponent(eventId)}/register`, {
         method: "POST",
         body: JSON.stringify({
           userId: user.userId,
           userName: user.userName,
           userEmail: user.userEmail,
           numberOfAttendees: attendeeCount,
+          isMember,
         }),
       });
     },
+    purchase: (eventId: string, payload: EventTicketPurchasePayload) => {
+      const user = getAvraUser();
+      return request<EventTicketPurchaseDto>("events", `/api/registrations/events/${encodeURIComponent(eventId)}/purchase`, {
+        method: "POST",
+        body: JSON.stringify({
+          userId: user.userId,
+          userName: user.userName,
+          userEmail: user.userEmail,
+          numberOfTickets: payload.numberOfTickets,
+          paymentMethod: payload.paymentMethod,
+          cardLast4: payload.cardLast4,
+          isMember: false,
+        }),
+      });
+    },
+    ticketsByUser: (userId?: string) => {
+      const resolvedUserId = userId ?? getAvraUser().userId;
+      return request<UserEventTicketDto[]>("events", `/api/registrations/tickets/user/${encodeURIComponent(resolvedUserId)}`);
+    },
+    validateTicket: (payload: ValidateEventTicketPayload) =>
+      request<EventTicketValidationResultDto>("events", "/api/registrations/tickets/validate", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
   },
   /** Marketing promotions. Reads are public; drafting and publishing require the admin role. */
   promotions: {
@@ -690,7 +976,11 @@ export const avraApi = {
       request<void>("events", `/api/promotions/${encodeURIComponent(promotionId)}`, { method: "DELETE" }),
   },
   communities: {
-    list: () => request<CommunityDto[]>("community", "/api/communities"),    create: (payload: CommunityPayload) => request<CommunityDto>("community", "/api/communities", {
+    list: () => request<CommunityDto[]>("community", "/api/communities"),
+    adminList: () => request<CommunityDto[]>("community", "/api/communities/admin"),
+    byId: (communityId: string) => request<CommunityDto>("community", `/api/communities/${encodeURIComponent(communityId)}`),
+    byCategory: (category: string) => request<CommunityDto[]>("community", `/api/communities/search/category?category=${encodeURIComponent(category)}`),
+    create: (payload: CommunityPayload) => request<CommunityDto>("community", "/api/communities", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -701,13 +991,87 @@ export const avraApi = {
     delete: (communityId: string) => request<void>("community", `/api/communities/${encodeURIComponent(communityId)}`, {
       method: "DELETE",
     }),
+    setStatus: (communityId: string, payload: UpdateCommunityStatusPayload) => request<CommunityDto>("community", `/api/communities/${encodeURIComponent(communityId)}/status`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+    members: (communityId: string) => request<CommunityMemberDto[]>("community", `/api/members/community/${encodeURIComponent(communityId)}`),
+    myMemberships: () => request<CommunityMembershipDto[]>("community", "/api/members/mine"),
     join: (communityId: string) => {
       const user = getAvraUser();
       const params = new URLSearchParams({ userId: user.userId, userName: user.userName });
-      return request("community", `/api/members/community/${encodeURIComponent(communityId)}?${params.toString()}`, {
+      return request<CommunityMemberDto>("community", `/api/members/community/${encodeURIComponent(communityId)}?${params.toString()}`, {
         method: "POST",
       });
     },
+    leave: (communityId: string) => request<void>("community", `/api/members/community/${encodeURIComponent(communityId)}`, {
+      method: "DELETE",
+    }),
+    setMemberRole: (communityId: string, userId: string, payload: SetCommunityMemberRolePayload) => request<CommunityMemberDto>(
+      "community",
+      `/api/members/community/${encodeURIComponent(communityId)}/role/${encodeURIComponent(userId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      },
+    ),
+    posts: (communityId: string, includeHidden = false) => request<CommunityPostDto[]>(
+      "community",
+      includeHidden
+        ? `/api/posts/community/${encodeURIComponent(communityId)}?includeHidden=true`
+        : `/api/posts/community/${encodeURIComponent(communityId)}`,
+    ),
+    createPost: (payload: CreateCommunityPostPayload) => request<CommunityPostDto>("community", "/api/posts", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    updatePost: (postId: string, payload: UpdateCommunityPostPayload) => request<CommunityPostDto>("community", `/api/posts/${encodeURIComponent(postId)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+    deletePost: (postId: string) => request<void>("community", `/api/posts/${encodeURIComponent(postId)}`, {
+      method: "DELETE",
+    }),
+    toggleLike: (postId: string) => request<CommunityPostDto>("community", `/api/posts/${encodeURIComponent(postId)}/like`, {
+      method: "POST",
+    }),
+    comments: (postId: string, includeHidden = false) => request<CommunityCommentDto[]>(
+      "community",
+      includeHidden
+        ? `/api/posts/comments/post/${encodeURIComponent(postId)}?includeHidden=true`
+        : `/api/posts/comments/post/${encodeURIComponent(postId)}`,
+    ),
+    createComment: (payload: CreateCommunityCommentPayload) => request<CommunityCommentDto>("community", "/api/posts/comments", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    updateComment: (commentId: string, payload: UpdateCommunityCommentPayload) => request<CommunityCommentDto>("community", `/api/posts/comments/${encodeURIComponent(commentId)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+    deleteComment: (commentId: string) => request<void>("community", `/api/posts/comments/${encodeURIComponent(commentId)}`, {
+      method: "DELETE",
+    }),
+    setPostVisibility: (postId: string, payload: SetCommunityContentVisibilityPayload) => request<CommunityPostDto>("community", `/api/posts/${encodeURIComponent(postId)}/visibility`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+    setCommentVisibility: (commentId: string, payload: SetCommunityContentVisibilityPayload) => request<CommunityCommentDto>("community", `/api/posts/comments/${encodeURIComponent(commentId)}/visibility`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+    report: (payload: CreateCommunityReportPayload) => request<CommunityReportDto>("community", "/api/reports", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    reports: (status?: string) => request<CommunityReportDto[]>(
+      "community",
+      status ? `/api/reports?status=${encodeURIComponent(status)}` : "/api/reports",
+    ),
+    resolveReport: (reportId: string, payload: ResolveCommunityReportPayload) => request<CommunityReportDto>("community", `/api/reports/${encodeURIComponent(reportId)}/resolve`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
   },
   wellness: {
     list: () => request<WellnessPlanDto[]>("wellness", "/api/plans"),

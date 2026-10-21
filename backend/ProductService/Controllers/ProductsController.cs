@@ -1,4 +1,5 @@
 using Avra.ServiceDefaults.Security;
+using Avra.ServiceDefaults.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ProductService.Models;
@@ -15,11 +16,13 @@ namespace ProductService.Controllers;
 public class ProductsController : ControllerBase
 {
     private readonly IProductService _productService;
+    private readonly IImageStorage _imageStorage;
     private readonly ILogger<ProductsController> _logger;
 
-    public ProductsController(IProductService productService, ILogger<ProductsController> logger)
+    public ProductsController(IProductService productService, IImageStorage imageStorage, ILogger<ProductsController> logger)
     {
         _productService = productService;
+        _imageStorage = imageStorage;
         _logger = logger;
     }
 
@@ -113,6 +116,44 @@ public class ProductsController : ControllerBase
         {
             _logger.LogError(ex, "Error searching products with term {SearchTerm}", searchTerm);
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error searching products" });
+        }
+    }
+
+    /// <summary>
+    /// Upload a product image to blob storage and return its stored reference.
+    /// </summary>
+    /// <returns>The stored blob reference to save against the product's image gallery.</returns>
+    [HttpPost("images")]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [RequestSizeLimit(10 * 1024 * 1024)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ImageUploadResultDto>> UploadImage(IFormFile file, CancellationToken cancellationToken)
+    {
+        if (file is null || file.Length == 0)
+        {
+            return BadRequest(new { message = "No file was uploaded." });
+        }
+
+        if (!_imageStorage.IsConfigured)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = "Image storage is not configured." });
+        }
+
+        try
+        {
+            await using var stream = file.OpenReadStream();
+            var reference = await _imageStorage.UploadAsync(stream, file.ContentType, cancellationToken);
+            return Ok(new ImageUploadResultDto { Reference = reference, Url = _imageStorage.ToDisplayUrl(reference) });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error uploading product image");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error uploading image" });
         }
     }
 

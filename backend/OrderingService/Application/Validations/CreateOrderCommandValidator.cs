@@ -21,10 +21,10 @@ public class CreateOrderCommandValidator : AbstractValidator<CreateOrderCommand>
         // Bank transfers and cash on delivery are settled out of band, so no card is collected.
         When(command => PaymentMethods.RequiresCard(command.PaymentMethod), () =>
         {
-            RuleFor(command => command.CardNumber).NotEmpty().Length(12, 19);
+            // Only the last four digits reach this service; the CVV is discarded at the basket.
+            RuleFor(command => command.CardNumber).NotEmpty().Length(1, 4);
             RuleFor(command => command.CardHolderName).NotEmpty();
             RuleFor(command => command.CardExpiration).NotEmpty().Must(BeInTheFuture).WithMessage("Please specify a valid card expiration date");
-            RuleFor(command => command.CardSecurityNumber).NotEmpty().Length(3, 4);
             RuleFor(command => command.CardTypeId).NotEmpty();
         });
     }

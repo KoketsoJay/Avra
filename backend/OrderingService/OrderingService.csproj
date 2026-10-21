@@ -1,9 +1,10 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <!-- Structured logging is wired through Serilog; LoggerMessage delegates add no value here.
          CA1711 is suppressed because eShop's *EventHandler naming is the point of the pattern. -->
     <NoWarn>$(NoWarn);CA1848;CA1873;CA2007;CA1711</NoWarn>
+    <UserSecretsId>f44ca5bc-52dd-4d67-914c-f88937bc0250</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

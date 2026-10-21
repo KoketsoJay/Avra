@@ -1,4 +1,5 @@
 using Avra.ServiceDefaults.Security;
+using Avra.ServiceDefaults.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using EventsService.Models;
@@ -15,11 +16,13 @@ namespace EventsService.Controllers;
 public class EventsController : ControllerBase
 {
     private readonly IEventService _eventService;
+    private readonly IImageStorage _imageStorage;
     private readonly ILogger<EventsController> _logger;
 
-    public EventsController(IEventService eventService, ILogger<EventsController> logger)
+    public EventsController(IEventService eventService, IImageStorage imageStorage, ILogger<EventsController> logger)
     {
         _eventService = eventService;
+        _imageStorage = imageStorage;
         _logger = logger;
     }
 
@@ -131,6 +134,43 @@ public class EventsController : ControllerBase
         {
             _logger.LogError(ex, "Error searching events by category: {Category}", category);
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error searching events" });
+        }
+    }
+
+    /// <summary>
+    /// Upload an event image to blob storage and return its stored reference.
+    /// </summary>
+    [HttpPost("images")]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [RequestSizeLimit(10 * 1024 * 1024)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ImageUploadResultDto>> UploadImage(IFormFile file, CancellationToken cancellationToken)
+    {
+        if (file is null || file.Length == 0)
+        {
+            return BadRequest(new { message = "No file was uploaded." });
+        }
+
+        if (!_imageStorage.IsConfigured)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = "Image storage is not configured." });
+        }
+
+        try
+        {
+            await using var stream = file.OpenReadStream();
+            var reference = await _imageStorage.UploadAsync(stream, file.ContentType, cancellationToken);
+            return Ok(new ImageUploadResultDto { Reference = reference, Url = _imageStorage.ToDisplayUrl(reference) });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error uploading event image");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error uploading image" });
         }
     }
 
@@ -279,11 +319,19 @@ public class EventsController : ControllerBase
 public class RegistrationsController : ControllerBase
 {
     private readonly IRegistrationService _registrationService;
+    private readonly ICurrentUser _currentUser;
+    private readonly IMembershipAccessClient _membershipAccessClient;
     private readonly ILogger<RegistrationsController> _logger;
 
-    public RegistrationsController(IRegistrationService registrationService, ILogger<RegistrationsController> logger)
+    public RegistrationsController(
+        IRegistrationService registrationService,
+        ICurrentUser currentUser,
+        IMembershipAccessClient membershipAccessClient,
+        ILogger<RegistrationsController> logger)
     {
         _registrationService = registrationService;
+        _currentUser = currentUser;
+        _membershipAccessClient = membershipAccessClient;
         _logger = logger;
     }
 
@@ -306,6 +354,12 @@ public class RegistrationsController : ControllerBase
                 return BadRequest(ModelState);
             }
 
+            registerDto.IsMember = await PopulateMembershipContextAsync(registerDto.UserId);
+            if (!string.IsNullOrWhiteSpace(_currentUser.UserId))
+            {
+                registerDto.UserId = _currentUser.UserId!;
+            }
+
             var registration = await _registrationService.RegisterForEventAsync(eventId, registerDto);
             return CreatedAtAction(nameof(GetRegistration), new { registrationId = registration.Id }, registration);
         }
@@ -323,6 +377,48 @@ public class RegistrationsController : ControllerBase
         {
             _logger.LogError(ex, "Error registering for event {EventId}", eventId);
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error registering for event" });
+        }
+    }
+
+    /// <summary>
+    /// Purchase paid event tickets and receive issued QR tickets.
+    /// </summary>
+    [HttpPost("events/{eventId}/purchase")]
+    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<EventTicketPurchaseDto>> PurchaseTickets(string eventId, PurchaseEventTicketsDto purchaseDto)
+    {
+        try
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState);
+            }
+
+            purchaseDto.IsMember = await PopulateMembershipContextAsync(purchaseDto.UserId);
+            if (!string.IsNullOrWhiteSpace(_currentUser.UserId))
+            {
+                purchaseDto.UserId = _currentUser.UserId!;
+            }
+
+            var purchase = await _registrationService.PurchaseTicketsAsync(eventId, purchaseDto);
+            return CreatedAtAction(nameof(GetRegistration), new { registrationId = purchase.Registration.Id }, purchase);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Event not found with id {EventId}", eventId);
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Cannot purchase ticket(s) for event {EventId}", eventId);
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error purchasing tickets for event {EventId}", eventId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error purchasing tickets" });
         }
     }
 
@@ -374,6 +470,47 @@ public class RegistrationsController : ControllerBase
     }
 
     /// <summary>
+    /// Ticket wallet for a user.
+    /// </summary>
+    [HttpGet("tickets/user/{userId}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<UserEventTicketDto>>> GetUserTickets(string userId)
+    {
+        try
+        {
+            return Ok(await _registrationService.GetUserTicketsAsync(userId));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching tickets for user {UserId}", userId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error fetching tickets" });
+        }
+    }
+
+    /// <summary>
+    /// Validate an issued QR ticket for check-in.
+    /// </summary>
+    [HttpPost("tickets/validate")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<EventTicketValidationResultDto>> ValidateTicket([FromBody] ValidateEventTicketDto validateDto)
+    {
+        try
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState);
+            }
+
+            return Ok(await _registrationService.ValidateTicketAsync(validateDto));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error validating ticket {TicketNumber}", validateDto.TicketNumber);
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error validating ticket" });
+        }
+    }
+
+    /// <summary>
     /// Cancel registration
     /// </summary>
     /// <param name="registrationId">Registration ID</param>
@@ -397,5 +534,24 @@ public class RegistrationsController : ControllerBase
             _logger.LogError(ex, "Error cancelling registration with id {RegistrationId}", registrationId);
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error cancelling registration" });
         }
+    }
+
+    private async Task<bool> PopulateMembershipContextAsync(string fallbackUserId)
+    {
+        var bearerHeader = HttpContext.Request.Headers.Authorization.ToString();
+        var accessToken = bearerHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? bearerHeader[7..].Trim()
+            : string.Empty;
+
+        var effectiveUserId = string.IsNullOrWhiteSpace(_currentUser.UserId) ? fallbackUserId : _currentUser.UserId!;
+        if (string.IsNullOrWhiteSpace(effectiveUserId))
+        {
+            return false;
+        }
+
+        return await _membershipAccessClient.IsCurrentUserMemberAsync(
+            accessToken,
+            effectiveUserId,
+            HttpContext.RequestAborted);
     }
 }

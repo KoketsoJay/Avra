@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Check, Pencil, Trash2 } from "lucide-react";
-import { getAvraUser } from "@/app/api/avraApi";
+import { Check, Pencil, Trash2, Upload } from "lucide-react";
+import { avraApi, getAvraUser } from "@/app/api/avraApi";
 import {
   DEFAULT_COMMUNITY_IMAGE, DEFAULT_PRODUCT_IMAGES, DEFAULT_WELLNESS_IMAGE,
   resolveImage,
@@ -19,8 +19,26 @@ const KINDS: Array<{ key:ContentKind; label:string }> = [
   { key:"communities", label:"Community" },
 ];
 
+function parseImageReferences(raw: string) {
+  return raw
+    .split(/[\n,]/)
+    .map(value => value.trim())
+    .filter(Boolean)
+    .filter((value, index, all) => all.findIndex(candidate => candidate.toLowerCase() === value.toLowerCase()) === index);
+}
+
 function emptyForm(kind: ContentKind): ContentForm {
-  if (kind === "products") return { name:"", category:"Apparel", price:"0", description:"", tag:"", img1:DEFAULT_PRODUCT_IMAGES[0], img2:DEFAULT_PRODUCT_IMAGES[1] };
+  if (kind === "products") {
+    return {
+      name:"",
+      category:"Apparel",
+      price:"0",
+      description:"",
+      details:"",
+      tag:"",
+      images:`${DEFAULT_PRODUCT_IMAGES[0]}\n${DEFAULT_PRODUCT_IMAGES[1]}`,
+    };
+  }
   if (kind === "wellness") return { name:"", category:"Yoga", level:"Beginner", durationDays:"30", price:"0", description:"", image:DEFAULT_WELLNESS_IMAGE };
   return { name:"", category:"Wellness", memberCount:"1", description:"", image:DEFAULT_COMMUNITY_IMAGE };
 }
@@ -32,14 +50,41 @@ export function ContentPage({ catalogue }: { catalogue: Catalogue }) {
   const [form, setForm] = useState<ContentForm>(() => emptyForm("products"));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string|null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [previews, setPreviews] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setForm(emptyForm(kind));
     setEditingId(null);
     setMessage(null);
+    setPreviews({});
   }, [kind]);
 
   const setField = (field:string, value:string) => setForm(prev => ({ ...prev, [field]:value }));
+
+  const uploadImages = async (files: FileList | null, mode: "append" | "replace") => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    setMessage(null);
+    try {
+      const results = await Promise.all(Array.from(files).map(file => avraApi.products.uploadImage(file)));
+      const references = results.map(result => result.reference);
+      setPreviews(prev => {
+        const next = { ...prev };
+        results.forEach(result => { if (result.url) next[result.reference] = result.url; });
+        return next;
+      });
+      setForm(prev => {
+        const existing = mode === "append" ? parseImageReferences(prev.images ?? "") : [];
+        return { ...prev, images: [...existing, ...references].join("\n") };
+      });
+    } catch (error) {
+      console.warn("Image upload failed", error);
+      setMessage("Image upload failed. Make sure you are signed in as an administrator.");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const items = kind === "products" ? catalogue.products : kind === "wellness" ? catalogue.programs : catalogue.communities;
 
@@ -47,7 +92,15 @@ export function ContentPage({ catalogue }: { catalogue: Catalogue }) {
     setEditingId(String(item.id));
     if (kind === "products") {
       const product = item as Product;
-      setForm({ name:product.name, category:product.category, price:String(product.price), description:product.description, tag:product.tag ?? "", img1:product.img1, img2:product.img2 });
+      setForm({
+        name:product.name,
+        category:product.category,
+        price:String(product.price),
+        description:product.description,
+        details:product.details,
+        tag:product.tag ?? "",
+        images:product.images.join("\n"),
+      });
     } else if (kind === "wellness") {
       const program = item as WellnessProgram;
       setForm({ name:program.name, category:program.category, level:program.level, durationDays:String(program.durationDays), price:String(program.price), description:program.description, image:program.image });
@@ -63,11 +116,15 @@ export function ContentPage({ catalogue }: { catalogue: Catalogue }) {
     setMessage(null);
     try {
       if (kind === "products") {
+        const images = parseImageReferences(form.images ?? "");
         await catalogue.saveProduct({
           id: editingId ? Number(editingId) : Date.now(),
           name:form.name, category:form.category, price:Number(form.price) || 0,
           description:form.description, tag:form.tag || undefined,
-          img1:form.img1 || DEFAULT_PRODUCT_IMAGES[0], img2:form.img2 || DEFAULT_PRODUCT_IMAGES[1],
+          details:form.details?.trim() || form.description,
+          img1:images[0] || DEFAULT_PRODUCT_IMAGES[0],
+          img2:images[1] || images[0] || DEFAULT_PRODUCT_IMAGES[1],
+          images:images.length > 0 ? images : [...DEFAULT_PRODUCT_IMAGES],
         });
       } else if (kind === "wellness") {
         await catalogue.saveProgram({
@@ -151,18 +208,42 @@ export function ContentPage({ catalogue }: { catalogue: Catalogue }) {
 
           {kind === "products" && (
             <>
+              <textarea
+                rows={3}
+                value={form.details ?? ""}
+                onChange={e=>setField("details", e.target.value)}
+                placeholder="More details (fabric, fit, care, finish...)"
+                className={`${adminFieldClass} resize-none`}
+                style={{ ...G.frosted, color:fg }}
+              />
               <input value={form.tag ?? ""} onChange={e=>setField("tag", e.target.value)} placeholder="Tag (Bestseller, New…)" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
-              <div className="grid grid-cols-2 gap-3">
-                <input value={form.img1 ?? ""} onChange={e=>setField("img1", e.target.value)} placeholder="Image 1" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
-                <input value={form.img2 ?? ""} onChange={e=>setField("img2", e.target.value)} placeholder="Image 2" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
-              </div>
+              <label className="flex items-center justify-center gap-2 w-full py-3 rounded-2xl text-[10px] tracking-widest uppercase cursor-pointer" style={{ ...G.frosted, color:gold }}>
+                <Upload size={13}/>{uploading ? "Uploading…" : "Upload images to storage"}
+                <input type="file" accept="image/*" multiple hidden disabled={uploading}
+                  onChange={e=>{ void uploadImages(e.target.files, "append"); e.target.value = ""; }} />
+              </label>
+              <textarea
+                rows={4}
+                value={form.images ?? ""}
+                onChange={e=>setField("images", e.target.value)}
+                placeholder="Image gallery references (one per line or comma-separated)"
+                className={`${adminFieldClass} resize-none`}
+                style={{ ...G.frosted, color:fg }}
+              />
+              {parseImageReferences(form.images ?? "").some(ref => previews[ref]) && (
+                <div className="flex flex-wrap gap-2">
+                  {parseImageReferences(form.images ?? "").map(ref => previews[ref] ? (
+                    <img key={ref} src={previews[ref]} alt="" className="w-12 h-12 rounded-lg object-cover bg-[#111118]" />
+                  ) : null)}
+                </div>
+              )}
             </>
           )}
           {kind !== "products" && (
             <input value={form.image ?? ""} onChange={e=>setField("image", e.target.value)} placeholder="Image reference" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
           )}
           <p className="text-[10px]" style={{ color:`${fg}28` }}>
-            Images are stored as a bundled file name (avra_30.jpg) or an absolute URL.
+            Product galleries accept multiple references. Use bundled file names (avra_30.jpg) or absolute URLs.
           </p>
 
           {message && <Notice>{message}</Notice>}

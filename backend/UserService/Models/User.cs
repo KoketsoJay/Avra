@@ -32,12 +32,64 @@ public class UserMembership
     public int Id { get; set; }
     public string UserId { get; set; } = string.Empty;
     public string PlanName { get; set; } = string.Empty;
-    public MembershipStatus Status { get; set; } = MembershipStatus.Active;
+    public MembershipStatus Status { get; set; } = MembershipStatus.Trialing;
     public DateTime StartDate { get; set; } = DateTime.UtcNow;
     public DateTime? EndDate { get; set; }
     public bool AutoRenew { get; set; } = true;
 
+    /// <summary>When the free trial stops. Null once the membership has been billed at least once.</summary>
+    public DateTime? TrialEndsAt { get; set; }
+
+    /// <summary>When the next charge falls due. Null once the membership is cancelled or lapsed.</summary>
+    public DateTime? NextBillingDate { get; set; }
+
+    /// <summary>Price captured at sign-up, so a later tier price change does not alter this member's bill.</summary>
+    public decimal MonthlyPrice { get; set; }
+
+    /// <summary>Consecutive failed charge attempts for the current billing period.</summary>
+    public int FailedAttempts { get; set; }
+
     public User? User { get; set; }
+
+    /// <summary>True while the member is inside the free period and has not been charged.</summary>
+    public bool IsInTrial(DateTime asOf) =>
+        Status == MembershipStatus.Trialing && TrialEndsAt is not null && TrialEndsAt > asOf;
+
+    /// <summary>A membership entitles the member to their tier benefits while trialing or active.</summary>
+    public bool IsEntitled =>
+        Status == MembershipStatus.Trialing || Status == MembershipStatus.Active;
+}
+
+/// <summary>
+/// One billing attempt against a membership. The ledger is append-only so a member's charge
+/// history survives retries and status changes.
+/// </summary>
+public class MembershipInvoice
+{
+    public int Id { get; set; }
+    public int MembershipId { get; set; }
+    public string UserId { get; set; } = string.Empty;
+    public string PlanName { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+
+    /// <summary>The month this invoice covers.</summary>
+    public DateTime PeriodStart { get; set; }
+    public DateTime PeriodEnd { get; set; }
+
+    public InvoiceStatus Status { get; set; } = InvoiceStatus.Pending;
+    public int Attempt { get; set; } = 1;
+    public string? FailureReason { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? SettledAt { get; set; }
+
+    public UserMembership? Membership { get; set; }
+}
+
+public enum InvoiceStatus
+{
+    Pending,
+    Paid,
+    Failed,
 }
 
 /// <summary>
@@ -112,7 +164,13 @@ public enum MembershipStatus
     Inactive,
     Paused,
     Cancelled,
-    Expired
+    Expired,
+
+    /// <summary>Inside the free introductory period; entitled to benefits but not yet billed.</summary>
+    Trialing,
+
+    /// <summary>Billing failed repeatedly; benefits withdrawn until the member resubscribes.</summary>
+    Lapsed,
 }
 
 /// <summary>
@@ -174,6 +232,18 @@ public class UpdateProfileDto
     public string? Avatar { get; set; }
 }
 
+/// <summary>Sets a member's authorisation role. Administrators only.</summary>
+public class SetRoleDto
+{
+    public string Role { get; set; } = string.Empty;
+}
+
+/// <summary>Activates or deactivates a member's account. Administrators only.</summary>
+public class SetActiveDto
+{
+    public bool IsActive { get; set; }
+}
+
 /// <summary>
 /// DTO for membership response
 /// </summary>
@@ -186,6 +256,24 @@ public class UserMembershipDto
     public DateTime StartDate { get; set; }
     public DateTime? EndDate { get; set; }
     public bool AutoRenew { get; set; }
+    public DateTime? TrialEndsAt { get; set; }
+    public DateTime? NextBillingDate { get; set; }
+    public decimal MonthlyPrice { get; set; }
+    public bool IsInTrial { get; set; }
+}
+
+/// <summary>A member's billing history entry.</summary>
+public class MembershipInvoiceDto
+{
+    public int Id { get; set; }
+    public string PlanName { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+    public DateTime PeriodStart { get; set; }
+    public DateTime PeriodEnd { get; set; }
+    public InvoiceStatus Status { get; set; }
+    public string? FailureReason { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? SettledAt { get; set; }
 }
 
 /// <summary>

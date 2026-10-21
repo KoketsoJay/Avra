@@ -1,3 +1,5 @@
+using Avra.ServiceDefaults.Security;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using CommunityService.Models;
 using CommunityService.Services;
@@ -13,11 +15,16 @@ namespace CommunityService.Controllers;
 public class CommunitiesController : ControllerBase
 {
     private readonly ICommunityService _communityService;
+    private readonly ICurrentUser _currentUser;
     private readonly ILogger<CommunitiesController> _logger;
 
-    public CommunitiesController(ICommunityService communityService, ILogger<CommunitiesController> logger)
+    public CommunitiesController(
+        ICommunityService communityService,
+        ICurrentUser currentUser,
+        ILogger<CommunitiesController> logger)
     {
         _communityService = communityService;
+        _currentUser = currentUser;
         _logger = logger;
     }
 
@@ -39,6 +46,18 @@ public class CommunitiesController : ControllerBase
             _logger.LogError(ex, "Error fetching all communities");
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error fetching communities" });
         }
+    }
+
+    /// <summary>
+    /// Get all communities, including private and inactive records.
+    /// </summary>
+    [HttpGet("admin")]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IEnumerable<CommunityDto>>> GetAllCommunitiesForAdmin()
+    {
+        var communities = await _communityService.GetAllCommunitiesAsync(includeInactive: true, includePrivate: true);
+        return Ok(communities);
     }
 
     /// <summary>
@@ -101,6 +120,7 @@ public class CommunitiesController : ControllerBase
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [Authorize]
     public async Task<ActionResult<CommunityDto>> CreateCommunity(CreateCommunityDto createDto)
     {
         try
@@ -110,8 +130,13 @@ public class CommunitiesController : ControllerBase
                 return BadRequest(ModelState);
             }
 
-            var community = await _communityService.CreateCommunityAsync(createDto);
+            var creatorId = _currentUser.UserId ?? createDto.CreatorId;
+            var community = await _communityService.CreateCommunityAsync(createDto, creatorId ?? string.Empty);
             return CreatedAtAction(nameof(GetCommunity), new { communityId = community.Id }, community);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
         }
         catch (Exception ex)
         {
@@ -130,7 +155,8 @@ public class CommunitiesController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<CommunityDto>> UpdateCommunity(string communityId, CreateCommunityDto updateDto)
+    [Authorize]
+    public async Task<ActionResult<CommunityDto>> UpdateCommunity(string communityId, UpdateCommunityDto updateDto)
     {
         try
         {
@@ -139,13 +165,33 @@ public class CommunitiesController : ControllerBase
                 return BadRequest(ModelState);
             }
 
-            var community = await _communityService.UpdateCommunityAsync(communityId, updateDto);
+            var actorUserId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(actorUserId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var community = await _communityService.UpdateCommunityAsync(
+                communityId,
+                updateDto,
+                actorUserId,
+                User.IsInRole(AvraRoles.Administrator));
+
             return Ok(community);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
         }
         catch (KeyNotFoundException ex)
         {
             _logger.LogWarning(ex, "Community not found with id {CommunityId}", communityId);
             return NotFound(new { message = ex.Message });
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            _logger.LogWarning(ex, "Unauthorized community update for id {CommunityId}", communityId);
+            return Forbid();
         }
         catch (Exception ex)
         {
@@ -162,21 +208,62 @@ public class CommunitiesController : ControllerBase
     [HttpDelete("{communityId}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [Authorize]
     public async Task<IActionResult> DeleteCommunity(string communityId)
     {
         try
         {
-            var deleted = await _communityService.DeleteCommunityAsync(communityId);
+            var actorUserId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(actorUserId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var deleted = await _communityService.DeleteCommunityAsync(
+                communityId,
+                actorUserId,
+                User.IsInRole(AvraRoles.Administrator));
+
             if (!deleted)
             {
                 return NotFound(new { message = $"Community with id {communityId} not found" });
             }
             return NoContent();
         }
+        catch (UnauthorizedAccessException ex)
+        {
+            _logger.LogWarning(ex, "Unauthorized community deletion for id {CommunityId}", communityId);
+            return Forbid();
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error deleting community with id {CommunityId}", communityId);
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error deleting community" });
+        }
+    }
+
+    /// <summary>
+    /// Set publication status for a community.
+    /// </summary>
+    [HttpPut("{communityId}/status")]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<CommunityDto>> SetCommunityStatus(string communityId, UpdateCommunityStatusDto dto)
+    {
+        try
+        {
+            var updated = await _communityService.SetStatusAsync(communityId, dto.Status);
+            return Ok(updated);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
         }
     }
 }
@@ -190,11 +277,16 @@ public class CommunitiesController : ControllerBase
 public class MembersController : ControllerBase
 {
     private readonly IMemberService _memberService;
+    private readonly ICurrentUser _currentUser;
     private readonly ILogger<MembersController> _logger;
 
-    public MembersController(IMemberService memberService, ILogger<MembersController> logger)
+    public MembersController(
+        IMemberService memberService,
+        ICurrentUser currentUser,
+        ILogger<MembersController> logger)
     {
         _memberService = memberService;
+        _currentUser = currentUser;
         _logger = logger;
     }
 
@@ -220,6 +312,24 @@ public class MembersController : ControllerBase
     }
 
     /// <summary>
+    /// Get the communities the signed-in user belongs to.
+    /// </summary>
+    [HttpGet("mine")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IEnumerable<CommunityMembershipDto>>> GetMine()
+    {
+        var userId = _currentUser.UserId;
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return Unauthorized(new { message = "Sign in required" });
+        }
+
+        var memberships = await _memberService.GetMembershipsAsync(userId);
+        return Ok(memberships);
+    }
+
+    /// <summary>
     /// Add member to community
     /// </summary>
     /// <param name="communityId">Community ID</param>
@@ -234,13 +344,20 @@ public class MembersController : ControllerBase
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(userName))
+            var resolvedUserId = _currentUser.IsAuthenticated ? _currentUser.UserId : userId;
+            var resolvedUserName = _currentUser.IsAuthenticated ? User.Identity?.Name : userName;
+
+            if (string.IsNullOrWhiteSpace(resolvedUserId) || string.IsNullOrWhiteSpace(resolvedUserName))
             {
                 return BadRequest(new { message = "userId and userName are required" });
             }
 
-            var member = await _memberService.AddMemberAsync(communityId, userId, userName);
-            return CreatedAtAction(nameof(GetMember), new { memberId = member.Id }, member);
+            var member = await _memberService.JoinCommunityAsync(communityId, resolvedUserId, resolvedUserName);
+            return CreatedAtAction(nameof(GetCommunityMembers), new { communityId }, member);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
         }
         catch (KeyNotFoundException ex)
         {
@@ -255,54 +372,73 @@ public class MembersController : ControllerBase
     }
 
     /// <summary>
-    /// Get member by ID
+    /// Leave a community as the signed-in user.
     /// </summary>
-    /// <param name="memberId">Member ID</param>
-    /// <returns>Member details</returns>
-    [HttpGet("{memberId}")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    /// <param name="communityId">Community ID</param>
+    [HttpDelete("community/{communityId}")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<CommunityMemberDto>> GetMember(string memberId)
+    public async Task<IActionResult> LeaveCommunity(string communityId)
     {
-        try
+        var userId = _currentUser.UserId;
+        if (string.IsNullOrWhiteSpace(userId))
         {
-            var member = await _memberService.GetMemberByIdAsync(memberId);
-            if (member == null)
-            {
-                return NotFound(new { message = $"Member with id {memberId} not found" });
-            }
-            return Ok(member);
+            return Unauthorized(new { message = "Sign in required" });
         }
-        catch (Exception ex)
+
+        var removed = await _memberService.LeaveCommunityAsync(communityId, userId);
+        if (!removed)
         {
-            _logger.LogError(ex, "Error fetching member with id {MemberId}", memberId);
-            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error fetching member" });
+            return NotFound(new { message = "Membership not found" });
         }
+
+        return NoContent();
     }
 
     /// <summary>
-    /// Remove member from community
+    /// Update a member role in a community.
     /// </summary>
-    /// <param name="memberId">Member ID</param>
-    /// <returns>Success status</returns>
-    [HttpDelete("{memberId}")]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [HttpPut("community/{communityId}/role/{targetUserId}")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> RemoveMember(string memberId)
+    public async Task<ActionResult<CommunityMemberDto>> UpdateMemberRole(string communityId, string targetUserId, UpdateMemberRoleDto dto)
     {
         try
         {
-            var removed = await _memberService.RemoveMemberAsync(memberId);
-            if (!removed)
+            var actorUserId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(actorUserId))
             {
-                return NotFound(new { message = $"Member with id {memberId} not found" });
+                return Unauthorized(new { message = "Sign in required" });
             }
-            return NoContent();
+
+            var updated = await _memberService.UpdateMemberRoleAsync(
+                communityId,
+                targetUserId,
+                dto.Role,
+                actorUserId,
+                User.IsInRole(AvraRoles.Administrator));
+
+            return Ok(updated);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error removing member with id {MemberId}", memberId);
-            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error removing member" });
+            _logger.LogError(ex, "Error updating role for user {TargetUserId} in community {CommunityId}", targetUserId, communityId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error updating member role" });
         }
     }
 }
@@ -316,11 +452,19 @@ public class MembersController : ControllerBase
 public class PostsController : ControllerBase
 {
     private readonly IPostService _postService;
+    private readonly IMemberService _memberService;
+    private readonly ICurrentUser _currentUser;
     private readonly ILogger<PostsController> _logger;
 
-    public PostsController(IPostService postService, ILogger<PostsController> logger)
+    public PostsController(
+        IPostService postService,
+        IMemberService memberService,
+        ICurrentUser currentUser,
+        ILogger<PostsController> logger)
     {
         _postService = postService;
+        _memberService = memberService;
+        _currentUser = currentUser;
         _logger = logger;
     }
 
@@ -331,11 +475,31 @@ public class PostsController : ControllerBase
     /// <returns>List of community posts</returns>
     [HttpGet("community/{communityId}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<ActionResult<IEnumerable<CommunityPostDto>>> GetCommunityPosts(string communityId)
+    public async Task<ActionResult<IEnumerable<CommunityPostDto>>> GetCommunityPosts(string communityId, [FromQuery] bool includeHidden = false)
     {
         try
         {
-            var posts = await _postService.GetCommunityPostsAsync(communityId);
+            var currentUserId = _currentUser.UserId;
+
+            if (includeHidden)
+            {
+                if (!_currentUser.IsAuthenticated || string.IsNullOrWhiteSpace(currentUserId))
+                {
+                    return Forbid();
+                }
+
+                var canModerate = await _memberService.CanModerateAsync(
+                    communityId,
+                    currentUserId,
+                    User.IsInRole(AvraRoles.Administrator));
+
+                if (!canModerate)
+                {
+                    return Forbid();
+                }
+            }
+
+            var posts = await _postService.GetCommunityPostsAsync(communityId, currentUserId, includeHidden);
             return Ok(posts);
         }
         catch (Exception ex)
@@ -357,7 +521,7 @@ public class PostsController : ControllerBase
     {
         try
         {
-            var post = await _postService.GetPostByIdAsync(postId);
+            var post = await _postService.GetPostByIdAsync(postId, _currentUser.UserId);
             if (post == null)
             {
                 return NotFound(new { message = $"Post with id {postId} not found" });
@@ -379,6 +543,7 @@ public class PostsController : ControllerBase
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [Authorize]
     public async Task<ActionResult<CommunityPostDto>> CreatePost(CreatePostDto createDto)
     {
         try
@@ -388,13 +553,79 @@ public class PostsController : ControllerBase
                 return BadRequest(ModelState);
             }
 
-            var post = await _postService.CreatePostAsync(createDto);
+            var authorId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(authorId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var authorName = string.IsNullOrWhiteSpace(User.Identity?.Name) ? createDto.UserName : User.Identity!.Name!;
+            var post = await _postService.CreatePostAsync(createDto, authorId, authorName);
             return CreatedAtAction(nameof(GetPost), new { postId = post.Id }, post);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error creating post");
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error creating post" });
+        }
+    }
+
+    /// <summary>
+    /// Update a post.
+    /// </summary>
+    [HttpPut("{postId}")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<CommunityPostDto>> UpdatePost(string postId, UpdatePostDto updateDto)
+    {
+        try
+        {
+            var actorUserId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(actorUserId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var existing = await _postService.GetPostByIdAsync(postId);
+            if (existing is null)
+            {
+                return NotFound(new { message = $"Post with id {postId} not found" });
+            }
+
+            var canModerate = await _memberService.CanModerateAsync(
+                existing.CommunityId,
+                actorUserId,
+                User.IsInRole(AvraRoles.Administrator));
+
+            var post = await _postService.UpdatePostAsync(postId, updateDto, actorUserId, canModerate);
+            return Ok(post);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating post with id {PostId}", postId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error updating post" });
         }
     }
 
@@ -406,11 +637,18 @@ public class PostsController : ControllerBase
     [HttpPost("{postId}/like")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [Authorize]
     public async Task<ActionResult<CommunityPostDto>> LikePost(string postId)
     {
         try
         {
-            var post = await _postService.LikePostAsync(postId);
+            var userId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var post = await _postService.ToggleLikeAsync(postId, userId);
             return Ok(post);
         }
         catch (KeyNotFoundException ex)
@@ -433,21 +671,332 @@ public class PostsController : ControllerBase
     [HttpDelete("{postId}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [Authorize]
     public async Task<IActionResult> DeletePost(string postId)
     {
         try
         {
-            var deleted = await _postService.DeletePostAsync(postId);
+            var actorUserId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(actorUserId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var existing = await _postService.GetPostByIdAsync(postId);
+            if (existing is null)
+            {
+                return NotFound(new { message = $"Post with id {postId} not found" });
+            }
+
+            var canModerate = await _memberService.CanModerateAsync(
+                existing.CommunityId,
+                actorUserId,
+                User.IsInRole(AvraRoles.Administrator));
+
+            var deleted = await _postService.DeletePostAsync(postId, actorUserId, canModerate);
             if (!deleted)
             {
                 return NotFound(new { message = $"Post with id {postId} not found" });
             }
             return NoContent();
         }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error deleting post with id {PostId}", postId);
             return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error deleting post" });
+        }
+    }
+
+    /// <summary>
+    /// Get comments for one post.
+    /// </summary>
+    [HttpGet("comments/post/{postId}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IEnumerable<CommunityCommentDto>>> GetPostComments(string postId, [FromQuery] bool includeHidden = false)
+    {
+        if (includeHidden)
+        {
+            var post = await _postService.GetPostByIdAsync(postId);
+            if (post is null)
+            {
+                return NotFound(new { message = $"Post with id {postId} not found" });
+            }
+
+            if (!_currentUser.IsAuthenticated || string.IsNullOrWhiteSpace(_currentUser.UserId))
+            {
+                return Forbid();
+            }
+
+            var canModerate = await _memberService.CanModerateAsync(post.CommunityId, _currentUser.UserId, User.IsInRole(AvraRoles.Administrator));
+            if (!canModerate)
+            {
+                return Forbid();
+            }
+        }
+
+        var comments = await _postService.GetPostCommentsAsync(postId, includeHidden);
+        return Ok(comments);
+    }
+
+    /// <summary>
+    /// Create a comment.
+    /// </summary>
+    [HttpPost("comments")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<CommunityCommentDto>> CreateComment(CreateCommentDto createDto)
+    {
+        try
+        {
+            var userId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var userName = string.IsNullOrWhiteSpace(User.Identity?.Name) ? "Community Member" : User.Identity!.Name!;
+            var comment = await _postService.CreateCommentAsync(createDto, userId, userName);
+            return CreatedAtAction(nameof(GetPostComments), new { postId = comment.PostId }, comment);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Update a comment.
+    /// </summary>
+    [HttpPut("comments/{commentId}")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<CommunityCommentDto>> UpdateComment(string commentId, UpdateCommentDto updateDto)
+    {
+        try
+        {
+            var userId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var comment = await _postService.UpdateCommentAsync(commentId, updateDto, userId, canModerate: false);
+            return Ok(comment);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Delete a comment.
+    /// </summary>
+    [HttpDelete("comments/{commentId}")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DeleteComment(string commentId)
+    {
+        try
+        {
+            var userId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var deleted = await _postService.DeleteCommentAsync(commentId, userId, canModerate: false);
+            if (!deleted)
+            {
+                return NotFound(new { message = $"Comment with id {commentId} not found" });
+            }
+
+            return NoContent();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    /// <summary>
+    /// Change post visibility for moderation.
+    /// </summary>
+    [HttpPut("{postId}/visibility")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<CommunityPostDto>> SetPostVisibility(string postId, SetContentVisibilityDto dto)
+    {
+        var userId = _currentUser.UserId;
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return Unauthorized(new { message = "Sign in required" });
+        }
+
+        var existing = await _postService.GetPostByIdAsync(postId);
+        if (existing is null)
+        {
+            return NotFound(new { message = $"Post with id {postId} not found" });
+        }
+
+        var canModerate = await _memberService.CanModerateAsync(existing.CommunityId, userId, User.IsInRole(AvraRoles.Administrator));
+        if (!canModerate)
+        {
+            return Forbid();
+        }
+
+        var post = await _postService.SetPostHiddenAsync(postId, dto.Hidden, userId, dto.Reason);
+        return Ok(post);
+    }
+
+    /// <summary>
+    /// Change comment visibility for moderation.
+    /// </summary>
+    [HttpPut("comments/{commentId}/visibility")]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<CommunityCommentDto>> SetCommentVisibility(string commentId, SetContentVisibilityDto dto)
+    {
+        var userId = _currentUser.UserId;
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return Unauthorized(new { message = "Sign in required" });
+        }
+
+        var comment = await _postService.SetCommentHiddenAsync(commentId, dto.Hidden, userId, dto.Reason);
+        return Ok(comment);
+    }
+}
+
+/// <summary>
+/// API controller for report and moderation workflow.
+/// </summary>
+[ApiController]
+[Route("api/[controller]")]
+[Produces("application/json")]
+public class ReportsController : ControllerBase
+{
+    private readonly IPostService _postService;
+    private readonly ICurrentUser _currentUser;
+    private readonly ILogger<ReportsController> _logger;
+
+    public ReportsController(IPostService postService, ICurrentUser currentUser, ILogger<ReportsController> logger)
+    {
+        _postService = postService;
+        _currentUser = currentUser;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Report post or comment content.
+    /// </summary>
+    [HttpPost]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<CommunityReportDto>> Report(CreateReportDto createDto)
+    {
+        try
+        {
+            var userId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var userName = string.IsNullOrWhiteSpace(User.Identity?.Name) ? "Community Member" : User.Identity!.Name!;
+            var report = await _postService.ReportContentAsync(createDto, userId, userName);
+            return CreatedAtAction(nameof(GetReports), new { reportId = report.Id }, report);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating community report");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error creating report" });
+        }
+    }
+
+    /// <summary>
+    /// Administrator report inbox.
+    /// </summary>
+    [HttpGet]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IEnumerable<CommunityReportDto>>> GetReports([FromQuery] string? status)
+    {
+        ReportStatus? parsed = null;
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            if (!Enum.TryParse<ReportStatus>(status, true, out var value))
+            {
+                return BadRequest(new { message = "Invalid status filter" });
+            }
+
+            parsed = value;
+        }
+
+        var reports = await _postService.GetReportsAsync(parsed);
+        return Ok(reports);
+    }
+
+    /// <summary>
+    /// Resolve a report.
+    /// </summary>
+    [HttpPut("{reportId}/resolve")]
+    [Authorize(Policy = AvraPolicies.AdministratorOnly)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<CommunityReportDto>> Resolve(string reportId, ResolveReportDto dto)
+    {
+        try
+        {
+            var userId = _currentUser.UserId;
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                return Unauthorized(new { message = "Sign in required" });
+            }
+
+            var report = await _postService.ResolveReportAsync(reportId, dto, userId);
+            return Ok(report);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
         }
     }
 }

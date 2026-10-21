@@ -1,0 +1,79 @@
+name: avra
+metadata:
+  template: avra-azd@1.0.0
+
+services:
+  product:
+    project: ./backend/ProductService
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../
+      remoteBuild: true
+  cart:
+    project: ./backend/CartService
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../
+      remoteBuild: true
+  user:
+    project: ./backend/UserService
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../
+      remoteBuild: true
+  events:
+    project: ./backend/EventsService
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../
+      remoteBuild: true
+  community:
+    project: ./backend/CommunityService
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../
+      remoteBuild: true
+  wellness:
+    project: ./backend/WellnessService
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../
+      remoteBuild: true
+  ordering:
+    project: ./backend/OrderingService
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../
+      remoteBuild: true
+  payment:
+    project: ./backend/PaymentService
+    language: dotnet
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: ../
+      remoteBuild: true
+  web:
+    project: .
+    language: js
+    host: staticwebapp
+    dist: dist
+  admin:
+    project: .
+    language: js
+    host: staticwebapp
+    dist: dist-admin

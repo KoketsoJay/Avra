@@ -1,8 +1,10 @@
 using Avra.EventBus.IntegrationEvents;
+using Avra.ServiceDefaults.Storage;
 using Microsoft.EntityFrameworkCore;
 using ProductService.Data;
 using ProductService.IntegrationEvents;
 using ProductService.Models;
+using System.Text.Json;
 
 namespace ProductService.Services;
 
@@ -39,15 +41,18 @@ public class ProductService : IProductService
 {
     private readonly ProductDbContext _context;
     private readonly ICatalogIntegrationEventService _integrationEventService;
+    private readonly IImageStorage _imageStorage;
     private readonly ILogger<ProductService> _logger;
 
     public ProductService(
         ProductDbContext context,
         ICatalogIntegrationEventService integrationEventService,
+        IImageStorage imageStorage,
         ILogger<ProductService> logger)
     {
         _context = context;
         _integrationEventService = integrationEventService;
+        _imageStorage = imageStorage;
         _logger = logger;
     }
 
@@ -93,17 +98,20 @@ public class ProductService : IProductService
     public async Task<ProductDto> CreateProductAsync(CreateProductDto createDto)
     {
         _logger.LogInformation("Creating new product: {ProductName}", createDto.Name);
+        var imageUrls = ToStorageReferences(NormalizeImageUrls(createDto.ImageUrls, createDto.Image1, createDto.Image2));
         
         var product = new Product
         {
             Name = createDto.Name,
             Description = createDto.Description,
+            Details = string.IsNullOrWhiteSpace(createDto.Details) ? createDto.Description : createDto.Details,
             Price = createDto.Price,
             Category = createDto.Category,
             Stock = createDto.Stock,
             Tag = createDto.Tag,
-            Image1 = createDto.Image1,
-            Image2 = createDto.Image2,
+            Image1 = imageUrls.ElementAtOrDefault(0),
+            Image2 = imageUrls.ElementAtOrDefault(1) ?? imageUrls.ElementAtOrDefault(0),
+            ImageGalleryJson = SerializeImageUrls(imageUrls),
             IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
@@ -127,15 +135,18 @@ public class ProductService : IProductService
         }
 
         var oldPrice = product.Price;
+        var imageUrls = ToStorageReferences(NormalizeImageUrls(updateDto.ImageUrls, updateDto.Image1, updateDto.Image2));
 
         product.Name = updateDto.Name;
         product.Description = updateDto.Description;
+        product.Details = string.IsNullOrWhiteSpace(updateDto.Details) ? updateDto.Description : updateDto.Details;
         product.Price = updateDto.Price;
         product.Category = updateDto.Category;
         product.Stock = updateDto.Stock;
         product.Tag = updateDto.Tag;
-        product.Image1 = updateDto.Image1;
-        product.Image2 = updateDto.Image2;
+        product.Image1 = imageUrls.ElementAtOrDefault(0);
+        product.Image2 = imageUrls.ElementAtOrDefault(1) ?? imageUrls.ElementAtOrDefault(0);
+        product.ImageGalleryJson = SerializeImageUrls(imageUrls);
         product.UpdatedAt = DateTime.UtcNow;
 
         if (oldPrice != product.Price)
@@ -166,10 +177,8 @@ public class ProductService : IProductService
             return false;
         }
 
-        // Soft delete
-        product.IsActive = false;
-        product.UpdatedAt = DateTime.UtcNow;
-        
+        // Hard delete
+        _context.Products.Remove(product);
         await _context.SaveChangesAsync();
 
         _logger.LogInformation("Product deleted successfully with id: {ProductId}", id);
@@ -286,7 +295,7 @@ public class ProductService : IProductService
         return MapToInventoryDto(product);
     }
 
-    private static InventoryItemDto MapToInventoryDto(Product product) => new()
+    private InventoryItemDto MapToInventoryDto(Product product) => new()
     {
         Id = product.Id,
         Name = product.Name,
@@ -297,24 +306,85 @@ public class ProductService : IProductService
         MaxStockThreshold = product.MaxStockThreshold,
         OnReorder = product.OnReorder,
         IsActive = product.IsActive,
-        Image1 = product.Image1,
+        Image1 = _imageStorage.ToDisplayUrl(product.Image1),
         UpdatedAt = product.UpdatedAt,
     };
 
-    private static ProductDto MapToDto(Product product)
+    private ProductDto MapToDto(Product product)
     {
+        var imageUrls = DeserializeImageUrls(product.ImageGalleryJson, product.Image1, product.Image2)
+            .Select(_imageStorage.ToDisplayUrl)
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Select(url => url!)
+            .ToList();
+
         return new ProductDto
         {
             Id = product.Id,
             Name = product.Name,
             Description = product.Description,
+            Details = string.IsNullOrWhiteSpace(product.Details) ? product.Description : product.Details,
             Price = product.Price,
             Category = product.Category,
             Stock = product.Stock,
             Tag = product.Tag,
-            Image1 = product.Image1,
-            Image2 = product.Image2,
+            Image1 = _imageStorage.ToDisplayUrl(product.Image1),
+            Image2 = _imageStorage.ToDisplayUrl(product.Image2),
+            ImageUrls = imageUrls,
             IsActive = product.IsActive
         };
+    }
+
+    private List<string> ToStorageReferences(IEnumerable<string> references) =>
+        references
+            .Select(_imageStorage.ToStorageReference)
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(r => r!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static List<string> NormalizeImageUrls(IEnumerable<string>? imageUrls, params string?[] fallbackImages)
+    {
+        var normalized = (imageUrls ?? [])
+            .Select(url => (url ?? string.Empty).Trim())
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (normalized.Count > 0)
+        {
+            return normalized;
+        }
+
+        return fallbackImages
+            .Select(url => (url ?? string.Empty).Trim())
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string? SerializeImageUrls(IReadOnlyList<string> imageUrls) =>
+        imageUrls.Count == 0 ? null : JsonSerializer.Serialize(imageUrls);
+
+    private static IReadOnlyList<string> DeserializeImageUrls(string? imageGalleryJson, params string?[] fallbackImages)
+    {
+        if (!string.IsNullOrWhiteSpace(imageGalleryJson))
+        {
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<List<string>>(imageGalleryJson);
+                var normalized = NormalizeImageUrls(parsed, fallbackImages);
+                if (normalized.Count > 0)
+                {
+                    return normalized;
+                }
+            }
+            catch (JsonException)
+            {
+                // Older data can still be consumed through image1/image2 fallback values.
+            }
+        }
+
+        return NormalizeImageUrls(null, fallbackImages);
     }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, Eye, EyeOff, Megaphone, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { Check, Eye, EyeOff, Megaphone, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
 import { avraApi, isApiUnavailable, type PromotionDto, type PromotionPayload } from "@/app/api/avraApi";
 import { DEFAULT_EVENT_IMAGE, resolveImage, type AvraEvent } from "@/shared/catalogue";
 import { G, Shine, bg, danger, fg, gold, goldGrad, money } from "@/shared/theme";
@@ -11,12 +11,14 @@ type EventsTab = "events" | "promotions";
 const emptyEventForm = () => ({
   id: "",
   title: "",
+  description: "",
   category: "Workshop",
   price: "0",
   date: new Date().toISOString().slice(0, 10),
   time: "10:00 AM",
   location: "Johannesburg, GP",
   image: DEFAULT_EVENT_IMAGE,
+  membersOnly: false,
 });
 
 const emptyPromotionForm = () => {
@@ -58,8 +60,27 @@ function EventsTabPanel({ catalogue }: { catalogue: Catalogue }) {
   const [form, setForm] = useState(emptyEventForm);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string|null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [preview, setPreview] = useState<string|null>(null);
 
-  const setField = (field:string, value:string) => setForm(prev => ({ ...prev, [field]:value }));
+  const setField = (field:string, value:string|boolean) => setForm(prev => ({ ...prev, [field]:value }));
+
+  const uploadImage = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setMessage(null);
+    try {
+      const result = await avraApi.events.uploadImage(file);
+      setField("image", result.reference);
+      setPreview(result.url ?? null);
+    } catch (error) {
+      console.warn("Event image upload failed", error);
+      setMessage("Image upload failed. Make sure you are signed in as an administrator.");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -70,12 +91,14 @@ function EventsTabPanel({ catalogue }: { catalogue: Catalogue }) {
       await catalogue.saveEvent({
         id: form.id || `event-${Date.now()}`,
         title: form.title,
+        description: form.description,
         category: form.category,
         price: price === 0 ? "Free" : price || 0,
         date: form.date,
         time: form.time,
         location: form.location,
         image: form.image || DEFAULT_EVENT_IMAGE,
+        membersOnly: form.membersOnly,
       } as AvraEvent);
       setMessage(form.id ? "Event updated." : "Event created.");
       setForm(emptyEventForm());
@@ -90,12 +113,14 @@ function EventsTabPanel({ catalogue }: { catalogue: Catalogue }) {
   const edit = (item: AvraEvent) => setForm({
     id: item.id,
     title: item.title,
+    description: item.description,
     category: item.category,
     price: String(item.price === "Free" ? 0 : item.price),
     date: item.date,
     time: item.time,
     location: item.location,
     image: item.image,
+    membersOnly: item.membersOnly,
   });
 
   return (
@@ -108,6 +133,8 @@ function EventsTabPanel({ catalogue }: { catalogue: Catalogue }) {
         </div>
 
         <input required value={form.title} onChange={e=>setField("title", e.target.value)} placeholder="Title" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
+        <textarea required rows={3} value={form.description} onChange={e=>setField("description", e.target.value)} placeholder="Description"
+          className={`${adminFieldClass} resize-none`} style={{ ...G.frosted, color:fg }} />
         <input required value={form.category} onChange={e=>setField("category", e.target.value)} placeholder="Category" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
         <input type="number" min="0" step="0.01" value={form.price} onChange={e=>setField("price", e.target.value)} placeholder="Price (0 for free)" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
         <div className="grid grid-cols-2 gap-3">
@@ -116,6 +143,15 @@ function EventsTabPanel({ catalogue }: { catalogue: Catalogue }) {
         </div>
         <input required value={form.location} onChange={e=>setField("location", e.target.value)} placeholder="Location" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
         <input value={form.image} onChange={e=>setField("image", e.target.value)} placeholder="Image reference" className={adminFieldClass} style={{ ...G.frosted, color:fg }} />
+        <label className="flex items-center justify-center gap-2 w-full py-3 rounded-2xl text-[10px] tracking-widest uppercase cursor-pointer" style={{ ...G.frosted, color:gold }}>
+          <Upload size={13}/>{uploading ? "Uploading…" : "Upload image to storage"}
+          <input type="file" accept="image/*" hidden disabled={uploading}
+            onChange={e=>{ void uploadImage(e.target.files); e.target.value = ""; }} />
+        </label>
+        {preview && <img src={preview} alt="" className="w-16 h-16 rounded-xl object-cover bg-[#111118]" />}
+        <label className="flex items-center gap-2 text-[10px] tracking-widest uppercase" style={{ color:`${fg}46` }}>
+          <input type="checkbox" checked={form.membersOnly} onChange={e=>setField("membersOnly", e.target.checked)} /> Members only
+        </label>
 
         {message && <Notice>{message}</Notice>}
         <button disabled={busy} className="w-full py-4 rounded-2xl text-xs font-bold tracking-widest uppercase disabled:opacity-60" style={{ background:goldGrad, color:bg }}>
@@ -132,7 +168,7 @@ function EventsTabPanel({ catalogue }: { catalogue: Catalogue }) {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold truncate" style={{ color:fg }}>{item.title}</p>
               <p className="text-[10px] tracking-widest uppercase truncate" style={{ color:`${fg}34` }}>
-                {item.category} · {item.date} · {item.price === "Free" ? "Free" : money(item.price)}
+                {item.category} · {item.date} · {item.price === "Free" ? "Free" : money(item.price)}{item.membersOnly ? " · Members only" : ""}
               </p>
             </div>
             <button aria-label={`Edit ${item.title}`} onClick={()=>edit(item)} className="p-2 rounded-full hover:bg-white/10" style={{ color:gold }}><Pencil size={14}/></button>

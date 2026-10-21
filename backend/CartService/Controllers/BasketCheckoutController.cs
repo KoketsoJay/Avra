@@ -79,10 +79,9 @@ public class BasketCheckoutController(
             Country = checkout.Country,
             ZipCode = checkout.ZipCode,
             PaymentMethod = checkout.PaymentMethod,
-            CardNumber = checkout.CardNumber,
+            CardLast4 = LastFourOf(checkout.CardNumber),
             CardHolderName = checkout.CardHolderName,
             CardExpiration = checkout.CardExpiration,
-            CardSecurityNumber = checkout.CardSecurityNumber,
             CardTypeId = checkout.CardTypeId,
             Buyer = checkout.Buyer,
             RequestId = requestId,
@@ -95,6 +94,16 @@ public class BasketCheckoutController(
         await eventBus.PublishAsync(integrationEvent);
 
         return Accepted();
+    }
+
+    /// <summary>
+    /// Reduces a card number to its last four digits. This is the only part of the card that is
+    /// allowed past this controller; the CVV is discarded entirely and never persisted.
+    /// </summary>
+    private static string LastFourOf(string? cardNumber)
+    {
+        var digits = new string((cardNumber ?? string.Empty).Where(char.IsDigit).ToArray());
+        return digits.Length <= 4 ? digits : digits[^4..];
     }
 }
 

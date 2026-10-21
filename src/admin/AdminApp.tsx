@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  BadgePercent, Boxes, Calendar, LayoutDashboard, LogOut, Package, Truck,
+  BadgePercent, Boxes, Calendar, LayoutDashboard, LogOut, Package, ShieldAlert, Truck, Users,
 } from "lucide-react";
 import {
   avraApi, getStoredProfile, isAdministrator, isApiUnavailable,
@@ -9,24 +9,30 @@ import {
 import { useCatalogue } from "@/shared/catalogue";
 import { G, Shine, bg, bodoni, fg, gold, goldGrad } from "@/shared/theme";
 import { Notice, adminFieldClass } from "@/admin/ui";
+import { DashboardPage } from "@/admin/pages/DashboardPage";
 import { OrdersPage } from "@/admin/pages/OrdersPage";
 import { ShippingPage } from "@/admin/pages/ShippingPage";
 import { InventoryPage } from "@/admin/pages/InventoryPage";
 import { ContentPage } from "@/admin/pages/ContentPage";
 import { EventsPage } from "@/admin/pages/EventsPage";
 import { DiscountsPage } from "@/admin/pages/DiscountsPage";
+import { CommunityPage } from "@/admin/pages/CommunityPage";
+import { MembersPage } from "@/admin/pages/MembersPage";
 
 export type Catalogue = ReturnType<typeof useCatalogue>;
 
-type Section = "orders" | "shipping" | "inventory" | "content" | "events" | "discounts";
+type Section = "dashboard" | "orders" | "shipping" | "inventory" | "content" | "events" | "community" | "discounts" | "members";
 
 const NAV: Array<{ key:Section; label:string; icon:typeof Truck }> = [
-  { key:"orders",    label:"Orders",    icon:LayoutDashboard },
+  { key:"dashboard", label:"Dashboard", icon:LayoutDashboard },
+  { key:"orders",    label:"Orders",    icon:Package },
   { key:"shipping",  label:"Shipping",  icon:Truck },
   { key:"inventory", label:"Inventory", icon:Boxes },
   { key:"content",   label:"Content",   icon:Package },
   { key:"events",    label:"Events",    icon:Calendar },
+  { key:"community", label:"Community", icon:ShieldAlert },
   { key:"discounts", label:"Discounts", icon:BadgePercent },
+  { key:"members",   label:"Members",   icon:Users },
 ];
 
 /** The storefront runs on its own origin, so the admin app holds its own session. */
@@ -85,7 +91,7 @@ function SignIn({ onSignedIn }: { onSignedIn:(profile:UserProfileDto)=>void }) {
 
 export default function AdminApp() {
   const [profile, setProfile] = useState<UserProfileDto|null>(() => getStoredProfile());
-  const [section, setSection] = useState<Section>("orders");
+  const [section, setSection] = useState<Section>("dashboard");
   const catalogue = useCatalogue();
 
   if (!isAdministrator(profile)) {
@@ -142,12 +148,15 @@ export default function AdminApp() {
         </div>
 
         <main className="max-w-5xl mx-auto px-6 py-8">
+          {section === "dashboard" && <DashboardPage catalogue={catalogue} />}
           {section === "orders"    && <OrdersPage />}
           {section === "shipping"  && <ShippingPage />}
           {section === "inventory" && <InventoryPage />}
           {section === "content"   && <ContentPage catalogue={catalogue} />}
           {section === "events"    && <EventsPage catalogue={catalogue} />}
+          {section === "community" && <CommunityPage />}
           {section === "discounts" && <DiscountsPage />}
+          {section === "members"   && <MembersPage />}
         </main>
       </div>
     </div>

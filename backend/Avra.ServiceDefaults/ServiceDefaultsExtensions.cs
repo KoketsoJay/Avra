@@ -134,15 +134,51 @@ public static class ServiceDefaultsExtensions
             .AddPolicy(AvraPolicies.AdministratorOnly, policy =>
                 policy.RequireAuthenticatedUser().RequireRole(AvraRoles.Administrator));
 
-        var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-            ?? ["http://localhost:5173", "http://localhost:3000"];
+        var configuredOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+            ?? Array.Empty<string>();
+        var normalizedConfiguredOrigins = configuredOrigins
+            .Where(origin => !string.IsNullOrWhiteSpace(origin))
+            .Select(origin => origin.Trim())
+            .ToArray();
 
-        builder.Services.AddCors(options => options.AddPolicy(CorsPolicyName, policy => policy
-            .WithOrigins(allowedOrigins)
-            .WithHeaders("Authorization", "Content-Type", CorrelationIdMiddleware.HeaderName)
-            .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-            .AllowCredentials()
-            .SetPreflightMaxAge(TimeSpan.FromMinutes(10))));
+        builder.Services.AddCors(options => options.AddPolicy(CorsPolicyName, policy =>
+        {
+            if (builder.Environment.IsDevelopment())
+            {
+                var configuredSet = normalizedConfiguredOrigins.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                // Vite can move to the next free localhost port (5174, 5175...) when 5173 is occupied.
+                policy.SetIsOriginAllowed(origin =>
+                {
+                    if (configuredSet.Contains(origin))
+                    {
+                        return true;
+                    }
+
+                    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+                    {
+                        return false;
+                    }
+
+                    return uri.Scheme is "http" or "https"
+                        && (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                            || uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase));
+                });
+            }
+            else if (normalizedConfiguredOrigins.Length > 0)
+            {
+                policy.WithOrigins(normalizedConfiguredOrigins);
+            }
+            else
+            {
+                policy.WithOrigins("http://localhost:5173", "http://localhost:3000");
+            }
+
+            policy.WithHeaders("Authorization", "Content-Type", CorrelationIdMiddleware.HeaderName)
+                .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+                .AllowCredentials()
+                .SetPreflightMaxAge(TimeSpan.FromMinutes(10));
+        }));
     }
 
     private static void AddResilience(WebApplicationBuilder builder)
@@ -218,8 +254,9 @@ public static class ServiceDefaultsExtensions
     }
 
     /// <summary>
-    /// Brings the database schema up to date on start-up. Outside Development this only applies
-    /// committed migrations; it never creates or reshapes a production schema implicitly.
+    /// Brings the database schema up to date on start-up. Contexts with committed migrations are
+    /// migrated; contexts without migrations get their schema created directly (each service owns
+    /// its own database, so this is safe).
     /// </summary>
     public static async Task InitializeDatabaseAsync<TContext>(this WebApplication app, CancellationToken cancellationToken = default)
         where TContext : DbContext
@@ -237,14 +274,12 @@ public static class ServiceDefaultsExtensions
                 await context.Database.MigrateAsync(cancellationToken);
                 logger.LogInformation("Applied pending migrations for {Context}", typeof(TContext).Name);
             }
-            else if (app.Environment.IsDevelopment())
-            {
-                await context.Database.EnsureCreatedAsync(cancellationToken);
-                logger.LogInformation("Created development schema for {Context}", typeof(TContext).Name);
-            }
             else
             {
-                logger.LogWarning("No migrations found for {Context}; schema management is expected to run out-of-band", typeof(TContext).Name);
+                // No migrations for this context: each service owns its own database, so creating
+                // the schema directly is safe and idempotent (EnsureCreated is a no-op once it exists).
+                await context.Database.EnsureCreatedAsync(cancellationToken);
+                logger.LogInformation("Ensured schema for {Context}", typeof(TContext).Name);
             }
         }
         catch (Exception ex)

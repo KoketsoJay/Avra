@@ -4,7 +4,8 @@ using OrderingService.Domain.SeedWork;
 namespace OrderingService.Domain.AggregatesModel.BuyerAggregate;
 
 /// <summary>
-/// A card a buyer has used before. Only a masked reference is retained — never the CVV.
+/// A card a buyer has used before. Only the last four digits are retained — never the full number
+/// and never the CVV, neither of which leaves the basket service.
 /// </summary>
 public class PaymentMethod : Entity
 {

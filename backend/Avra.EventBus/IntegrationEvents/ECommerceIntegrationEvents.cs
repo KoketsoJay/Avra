@@ -18,10 +18,14 @@ public record UserCheckoutAcceptedIntegrationEvent : IntegrationEvent
     /// <summary>Card, BankTransfer or CashOnDelivery. Card fields are only meaningful for Card.</summary>
     public string PaymentMethod { get; init; } = "Card";
 
-    public string CardNumber { get; init; } = string.Empty;
+    /// <summary>
+    /// The last four digits only. The full number and the CVV never leave the basket service, so
+    /// they are never written to the broker table or to any downstream database.
+    /// </summary>
+    public string CardLast4 { get; init; } = string.Empty;
+
     public string CardHolderName { get; init; } = string.Empty;
     public DateTime CardExpiration { get; init; }
-    public string CardSecurityNumber { get; init; } = string.Empty;
     public int CardTypeId { get; init; }
     public string? Buyer { get; init; }
 

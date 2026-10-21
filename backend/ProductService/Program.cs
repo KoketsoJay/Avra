@@ -2,6 +2,7 @@ using Avra.EventBus;
 using Avra.EventBus.IntegrationEvents;
 using Avra.EventBus.Outbox;
 using Avra.ServiceDefaults;
+using Avra.ServiceDefaults.Storage;
 using Microsoft.EntityFrameworkCore;
 using ProductService.Data;
 using ProductService.IntegrationEvents;
@@ -12,6 +13,8 @@ using Serilog;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddAvraServiceDefaults("product-service");
+
+builder.AddAvraImageStorage();
 
 builder.Services.AddDbContext<ProductDbContext>(options =>
     options.UseSqlServer(
@@ -34,6 +37,7 @@ var app = builder.Build();
 
 app.UseAvraServiceDefaults();
 await app.InitializeDatabaseAsync<ProductDbContext>();
+await app.EnsureLatestProductSchemaAsync();
 
 try
 {
